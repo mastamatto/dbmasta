@@ -11,10 +11,10 @@ from sqlalchemy.sql import (and_, or_,
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 import datetime as dt
-from dbConnect.authorization import Authorization
-from dbConnect.async_db_client.response import DataBaseResponse
-from dbConnect.async_db_client.sql_types import type_map
-from dbConnect.async_db_client.tables import TableCache
+from dbmasta.authorization import Authorization
+from dbmasta.async_db_client.response import DataBaseResponse
+from dbmasta.sql_types import type_map
+from dbmasta.async_db_client.tables import TableCache
 
 DEBUG = False
 TIMEOUT_SECONDS = 240
@@ -39,14 +39,16 @@ class AsyncDataBase():
                  auth:Authorization,
                  ):
         self.auth = auth
-        self.database     = 'jupiterdb'
         self.debug        = DEBUG
         self.table_cache  = {}
         
-    ### INITIALIZERS
+    @property
+    def database(self):
+        return self.auth.default_database
+        
     @classmethod
     def env(cls):
-        auth = Authorization.env()
+        auth = Authorization.env(as_async=True)
         return cls(auth)
 
     def engine(self, database):
@@ -138,7 +140,7 @@ class AsyncDataBase():
     async def select(self, database:str, table_name:str, params:dict=None, columns:list=None, 
                distinct:bool=False, order_by:str=None, offset:int=None, limit:int=None, 
                reverse:bool=None, textual:bool=False, response_model:object=None, 
-               as_datapoints:bool=False, as_decimals:bool=False) -> DataBaseResponse | str:
+               as_decimals:bool=False) -> DataBaseResponse | str:
         engine = self.engine(database)
         dbr = DataBaseResponse.default(database)
         try:
@@ -163,7 +165,7 @@ class AsyncDataBase():
                 txt = self.textualize(query)
                 return txt
             dbr = await self.execute(engine, query, response_model=response_model, 
-                                    as_datapoints=as_datapoints, as_decimals=as_decimals)
+                                    as_decimals=as_decimals)
         except Exception as e:
             dbr.successful = False
             dbr.error_info = e.__repr__()

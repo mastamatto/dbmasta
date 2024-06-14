@@ -6,7 +6,6 @@ class DataBaseResponse():
     def __init__(self,
                  query,
                  as_decimals:bool=True,
-                 as_datapoints:bool=False,
                  response_model:object=None,
                  **dbr_args
                  ):
@@ -21,7 +20,6 @@ class DataBaseResponse():
                 compile_kwargs={"literal_binds": False})
                 )
         self.as_decimals = as_decimals
-        self.as_datapoints = as_datapoints
         self.response_model = response_model # callable or class that takes one positional argument 'row'
         # some default values
         self.keys         = []
@@ -65,9 +63,7 @@ class DataBaseResponse():
                 if isinstance(row[k], Decimal):
                     row[k] = float(row[k])
         # see if we need to return models or just dictionaries
-        if self.response_model is None and self.as_datapoints:
-            maker = lambda row: row
-        elif self.response_model is not None:
+        if self.response_model is not None:
             maker = self.response_model
         else:
             maker = lambda row: row

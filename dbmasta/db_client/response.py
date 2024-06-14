@@ -6,7 +6,6 @@ class DataBaseResponse():
     def __init__(self,
                  query,
                  as_decimals:bool=True,
-                 as_datapoints:bool=False,
                  response_model:object=None,
                  **dbr_args
                  ):
@@ -21,7 +20,6 @@ class DataBaseResponse():
                 compile_kwargs={"literal_binds": False})
                 )
         self.as_decimals = as_decimals
-        self.as_datapoints = as_datapoints
         self.response_model = response_model # callable or class that takes one positional argument 'row'
         # some default values
         self.keys         = []

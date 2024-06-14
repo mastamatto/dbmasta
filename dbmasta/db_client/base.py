@@ -16,10 +16,10 @@ from sqlalchemy.sql import (and_, or_,
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.pool import QueuePool
 import datetime as dt
-from dbConnect.db_client.authorization import Authorization
-from dbConnect.db_client.response import DataBaseResponse
-from dbConnect.db_client.sql_types import type_map
-from dbConnect.db_client.tables import TableCache
+from dbmasta.authorization import Authorization
+from dbmasta.db_client.response import DataBaseResponse
+from dbmasta.sql_types import type_map
+from dbmasta.db_client.tables import TableCache
 
 DEBUG = False
 NULLPOOL_LIMIT  = 10_000
@@ -43,13 +43,19 @@ class DataBase:
         'null': sql_null,
         'join': sql_join
     }
-    def __init__(self, auth: Authorization, debug:bool=False):
-        self.auth = auth
-        self.database = 'jupiterdb'
+    def __init__(self, 
+                 auth: Authorization|dict, 
+                 debug:bool=False
+                 ):
+        self.auth = auth if isinstance(Authorization) else Authorization(**auth)
         self.debug = debug
         self.table_cache = {
             # name: TableCache
         }
+
+    @property
+    def database(self):
+        return self.auth.default_database
 
     @classmethod
     def env(cls, debug:bool=False):
@@ -57,12 +63,7 @@ class DataBase:
         return cls(auth, debug)
     
     @classmethod
-    def oet(cls, debug:bool=False):
-        auth = Authorization.oet()
-        return cls(auth, debug)
-    
-    @classmethod
-    def with_creds(cls, host:str, port:int, username:str, password:str, database:str, debug:bool=False):
+    def config(cls, host:str, port:int, username:str, password:str, database:str, debug:bool=False):
         auth = Authorization(username, password, host, port, database)
         return cls(auth, debug)
 
@@ -168,7 +169,7 @@ class DataBase:
     def select(self, database:str, table_name:str, params:dict=None, columns:list=None, 
                distinct:bool=False, order_by:str=None, offset:int=None, limit:int=None, 
                reverse:bool=None, textual:bool=False, response_model:object=None, 
-               as_datapoints:bool=False, as_decimals:bool=False) -> DataBaseResponse | str:
+               as_decimals:bool=False) -> DataBaseResponse | str:
         engine = self.engine(database)
         dbr = DataBaseResponse.default(database)
         try:
@@ -191,7 +192,7 @@ class DataBase:
             if textual:
                 dbr = self.textualize(query)
             else:
-                dbr = self.execute(engine, query, response_model=response_model, as_datapoints=as_datapoints, as_decimals=as_decimals)
+                dbr = self.execute(engine, query, response_model=response_model, as_decimals=as_decimals)
         except Exception as e:
             dbr.error_info = str(e.__repr__())
             dbr.successful = False

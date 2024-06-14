@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import datetime as dt
 import json
-from dbConnect.exceptions import InvalidDate
+from dbmasta.exceptions import InvalidDate
 
 def unpack(obj, **kwargs):
     for k,v in kwargs.items():

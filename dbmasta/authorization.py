@@ -7,7 +7,7 @@ class Authorization:
                  password:str,
                  host:str,
                  port:int,
-                 database:str,
+                 default_database:str,
                  as_async:bool=False
                  ):
         """Authentication management
@@ -22,7 +22,7 @@ class Authorization:
             "password": "somepass",
             "host": "localhost:25252",
             "port": 3306,
-            "database": "default_database"
+            "default_database": "default_database"
         }
         
         # Instantiate the database controller
@@ -36,7 +36,7 @@ class Authorization:
         self.password        = password
         self.host            = host
         self.port            = int(port)
-        self.database        = database
+        self.default_database= default_database
         self.engine_name     = "asyncmy" if as_async else "pymysql"
     
     @classmethod
@@ -54,13 +54,13 @@ class Authorization:
             password = os.getenv('db_password'),
             host     = os.getenv('db_host'),
             port     = os.getenv('db_port'),
-            database = os.getenv('db_default')
+            default_database = os.getenv('db_default'),
             as_async = as_async
         )
         return auth
         
     def uri(self, database:str=None):
-        database = database if database is not None else self.database
+        database = database if database is not None else self.default_database
         uri = "mysql+{engine}://{user}:{password}@{host}:{port}/{database}".format(
             engine=self.engine_name,
             user= self.username, password=self.password, host=self.host, 
