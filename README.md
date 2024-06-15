@@ -1,4 +1,4 @@
-# dbConnect (simple mariadb interface)
+# dbmasta (simple mariadb interface)
 
 ## Overview
 
@@ -9,7 +9,7 @@ This Python package provides a simple interface for interacting with MariaDB dat
 To install this package, run the following pip command. **Note: this requires SQLAlchemy 2.0.27 or greater**
 
 ```bash
-pip install dbConnect
+pip install dbmasta
 ```
 
 Replace `yourusername/yourrepository` with the actual path to your repository.
@@ -21,7 +21,7 @@ Replace `yourusername/yourrepository` with the actual path to your repository.
 First, configure the database client with the necessary credentials:
 
 ```python
-from dbConnect import DataBase, AsyncDataBase
+from dbmasta import DataBase, AsyncDataBase
 
 # Initialize the database client
 db = DataBase(
