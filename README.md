@@ -12,8 +12,6 @@ To install this package, run the following pip command. **Note: this requires SQ
 pip install dbmasta
 ```
 
-Replace `yourusername/yourrepository` with the actual path to your repository.
-
 ## Basic Usage
 
 ### Configuration
