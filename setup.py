@@ -13,7 +13,7 @@ setup(
     description='A simple MariaDB client based on SQLAlchemy core',
     long_description=getlong(),
     long_description_content_type='text/markdown',
-    url='https://github.com/mastamatto/dbConnect',
+    url='https://github.com/mastamatto/dbmasta',
     packages=find_packages(),
     install_requires=[
         'sqlalchemy>=2.0.27',
