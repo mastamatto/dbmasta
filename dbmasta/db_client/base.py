@@ -4,7 +4,7 @@ For God so loved the world, that he gave his only begotten Son, that whosoever b
 in Him should not perish, but have everlasting life. 
 """
 from sqlalchemy import (create_engine, 
-                        text as sql_text, asc, desc, null as sql_null)
+                        text as sql_text, asc, desc, null as sql_null, func)
 from sqlalchemy.sql import (and_, or_, 
                             not_ as sql_not, 
                             select, 
@@ -17,9 +17,9 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.pool import QueuePool
 import datetime as dt
 from dbmasta.authorization import Authorization
-from dbmasta.db_client.response import DataBaseResponse
+from .response import DataBaseResponse
 from dbmasta.sql_types import type_map
-from dbmasta.db_client.tables import TableCache
+from .tables import TableCache
 
 DEBUG = False
 NULLPOOL_LIMIT  = 10_000
@@ -43,19 +43,13 @@ class DataBase:
         'null': sql_null,
         'join': sql_join
     }
-    def __init__(self, 
-                 auth: Authorization|dict, 
-                 debug:bool=False
-                 ):
-        self.auth = auth if isinstance(Authorization) else Authorization(**auth)
+    def __init__(self, auth: Authorization, debug:bool=False):
+        self.auth = auth
+        self.database = auth.default_database
         self.debug = debug
         self.table_cache = {
             # name: TableCache
         }
-
-    @property
-    def database(self):
-        return self.auth.default_database
 
     @classmethod
     def env(cls, debug:bool=False):
@@ -63,7 +57,12 @@ class DataBase:
         return cls(auth, debug)
     
     @classmethod
-    def config(cls, host:str, port:int, username:str, password:str, database:str, debug:bool=False):
+    def oet(cls, debug:bool=False):
+        auth = Authorization.oet()
+        return cls(auth, debug)
+    
+    @classmethod
+    def with_creds(cls, host:str, port:int, username:str, password:str, database:str, debug:bool=False):
         auth = Authorization(username, password, host, port, database)
         return cls(auth, debug)
 
@@ -147,7 +146,7 @@ class DataBase:
     def get_header_info(self, database, table_name) -> dict:
         if not database:
             database = self.database
-        hdrQry = f"SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = N'{table_name}'"
+        hdrQry = f"SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = N'{table_name}' AND TABLE_SCHEMA = N'{database}'"
         hdrRsp = self.run(hdrQry, database)
         assert len(hdrRsp) > 0, f"Table Does Not Exist: {table_name}"
         res = {x['COLUMN_NAME']: {k : self.convert_header_info(k, v) 
@@ -169,7 +168,7 @@ class DataBase:
     def select(self, database:str, table_name:str, params:dict=None, columns:list=None, 
                distinct:bool=False, order_by:str=None, offset:int=None, limit:int=None, 
                reverse:bool=None, textual:bool=False, response_model:object=None, 
-               as_decimals:bool=False) -> DataBaseResponse | str:
+               as_datapoints:bool=False, as_decimals:bool=False) -> DataBaseResponse | str:
         engine = self.engine(database)
         dbr = DataBaseResponse.default(database)
         try:
@@ -192,7 +191,7 @@ class DataBase:
             if textual:
                 dbr = self.textualize(query)
             else:
-                dbr = self.execute(engine, query, response_model=response_model, as_decimals=as_decimals)
+                dbr = self.execute(engine, query, response_model=response_model, as_datapoints=as_datapoints, as_decimals=as_decimals)
         except Exception as e:
             dbr.error_info = str(e.__repr__())
             dbr.successful = False
@@ -308,13 +307,13 @@ class DataBase:
     ### QUERY CONSTRUCTORS
     @staticmethod
     def and_(conditions):
-        """Returns a callable for 'AND' condition."""
-        return lambda table, query: query.where(and_(*[DataBase._process_condition(table, cond) for cond in conditions]))
+        # implemented for legacy versions
+        return conditions
 
     @staticmethod
     def or_(conditions):
-        """Returns a callable for 'OR' condition."""
-        return lambda table, query: query.where(or_(*[DataBase._process_condition(table, cond) for cond in conditions]))
+        # implemented for legacy versions
+        return conditions
     
     @staticmethod
     def not_(func, *args):
@@ -322,9 +321,20 @@ class DataBase:
         return lambda col: sql_not(func(*args)(col))
     
     @staticmethod
-    def in_(values, _not=False):
+    def in_(values, _not=False, include_null:bool=None):
         """Returns a callable for 'in' condition."""
-        return lambda col: col.in_(values) if not _not else ~col.in_(values)
+        include_null = _not and include_null is None
+        if include_null:
+            def condition(col):
+                in_clause = col.in_(values)
+                null_clause = col.is_(None)
+                if _not:
+                    return sql_not(in_clause) | null_clause
+                else:
+                    return in_clause | null_clause
+            return condition
+        else:
+            return lambda col: col.in_(values) if not _not else ~col.in_(values)
 
     ### QUERY FRAGMENTS
     @staticmethod
@@ -337,7 +347,7 @@ class DataBase:
                 return col > value if not _not else col <= value
         return f
     @staticmethod
-    def greaterThan(value, orEqual:bool=False, _not:bool=False):
+    def greaterThan(value, orEqual, _not):
         return DataBase.greater_than(value, orEqual, _not)
     @staticmethod
     def less_than(value, or_equal:bool=False, _not=False):
@@ -349,20 +359,23 @@ class DataBase:
                 return col < value if not _not else col >= value
         return f
     @staticmethod
-    def lessThan(value, orEqual:bool=False, _not:bool=False):
+    def lessThan(value, orEqual, _not):
         return DataBase.less_than(value, orEqual, _not)
     @staticmethod
-    def equal_to(value, _not = False):
+    def equal_to(value, _not=False, include_null:bool=None):
+        include_null = _not and include_null is None
+        if include_null:
+            return lambda col: func.ifnull(col, '') == value if not _not else func.ifnull(col, '') != value
         return lambda col: col == value if not _not else col != value
     @staticmethod
-    def equalTo(value, _not=False):
-        return DataBase.equal_to(value, _not)
+    def equalTo(value, _not=False, include_null:bool=None):
+        return DataBase.equal_to(value, _not=_not, include_null=include_null)
     @staticmethod
-    def between(value1, value2, _not = False): # not inclusive
+    def between(value1, value2, _not=False): # not inclusive
         def f(col):
             v1 = min([value1, value2])
             v2 = max([value1, value2])
-            return col.between(v1, v2)
+            return col.between(v1, v2) if not _not else sql_not(col.between(v1, v2))
         return f
     @staticmethod
     def after(date, inclusive = False, _not = False):
@@ -402,31 +415,34 @@ class DataBase:
         return DataBase.like(f"%{value}%", _not)
     @staticmethod
     def custom(value:str):
-        lambda col: sql_text(f"`{col.table.name}`.`{col.key}` {value}")
+        return lambda col: sql_text(f"`{col.table.name}`.`{col.key}` {value}")
 
     @staticmethod
     def _process_condition(table, condition):
-        """Processes an individual condition, which can be a dict or a callable."""
-        if callable(condition):
-            # Condition is a callable (e.g., returned by DB.not_)
-            return condition(table)
-        elif isinstance(condition, dict):
-            # Condition is a dictionary of key-value pairs
-            return and_(*[table.c[key] == value if not callable(value) else value(table.c[key]) for key, value in condition.items()])
+        if isinstance(condition, dict):
+            conditions = []
+            for key, value in condition.items():
+                if key == '_AND_':
+                    conditions.append(and_(*[DataBase._process_condition(table, v) for v in value]))
+                elif key == '_OR_':
+                    conditions.append(or_(*[DataBase._process_condition(table, v) for v in value]))
+                elif callable(value):
+                    conditions.append(value(table.c[key]))
+                else:
+                    conditions.append(table.c[key] == value)
+            return conditions[0] if len(conditions) == 1 else and_(*conditions)
         else:
-            raise ValueError("Invalid condition format")
+            raise ValueError("Invalid condition format: Expected a dict or appropriate condition type.")
 
     def _construct_conditions(self, query, table, params):
-        """Applies conditions to the query."""
+        """Constructs complex conditions for the query."""
         for key, condition in params.items():
-            if key in {'_AND_', '_OR_'}:
-                # Assuming condition is a callable returned by DB.and_ or DB.or_
-                query = condition(table, query)
+            if key in ['_AND_', '_OR_']:
+                nested_condition = DataBase._process_condition(table, {key: condition})
+                query = query.where(nested_condition)
             elif callable(condition):
-                # Apply callable conditions
                 query = query.where(condition(table.c[key]))
             else:
-                # Apply simple key-value conditions
                 query = query.where(table.c[key] == condition)
         return query
     

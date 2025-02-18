@@ -1,5 +1,4 @@
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy import (text as sql_text, asc, desc, null as sql_null)
+from sqlalchemy import (text as sql_text, asc, desc, null as sql_null, func)
 from sqlalchemy.sql import (and_, or_, 
                             not_ as sql_not, 
                             select, 
@@ -9,14 +8,14 @@ from sqlalchemy.sql import (and_, or_,
                             join as sql_join
                             )
 from sqlalchemy.dialects.mysql import insert
-from sqlalchemy.pool import AsyncAdaptedQueuePool
 import datetime as dt
 from dbmasta.authorization import Authorization
-from dbmasta.async_db_client.response import DataBaseResponse
+from .response import DataBaseResponse
 from dbmasta.sql_types import type_map
-from dbmasta.async_db_client.tables import TableCache
+from .tables import TableCache
+from .engine import Engine, EngineManager
+import asyncio, traceback
 
-DEBUG = False
 TIMEOUT_SECONDS = 240
 
 class AsyncDataBase():
@@ -37,57 +36,81 @@ class AsyncDataBase():
     }
     def __init__(self,
                  auth:Authorization,
+                 debug:bool=False,
+                 on_new_table=None,
+                 on_query_error=None,
+                 ignore_event_errors:bool=False,
                  ):
         self.auth = auth
-        self.debug        = DEBUG
+        self.database     = auth.default_database
+        self.debug        = debug
         self.table_cache  = {}
+        self.ignore_event_errors = ignore_event_errors
+        self.event_handlers = {
+            "on_new_table": on_new_table,
+            "on_query_error": on_query_error
+        }
+        self.engine_manager = EngineManager(db=self)
         
-    @property
-    def database(self):
-        return self.auth.default_database
-        
+    ### INITIALIZERS
     @classmethod
-    def env(cls):
+    def env(cls, debug:bool=False):
         auth = Authorization.env(as_async=True)
-        return cls(auth)
+        return cls(auth, debug=debug)
 
-    def engine(self, database):
-        return create_async_engine(
-            url = self.auth.uri(database),
-            echo = self.debug,
-            poolclass = AsyncAdaptedQueuePool,  # Use a AsyncAdaptedQueuePool for pooling connections
-            max_overflow = 0,       # No extra connections beyond the pool size
-            pool_size = 1,          # Pool size of 1, mimicking single connection behavior
-            pool_recycle = -1,      # Disables connection recycling
-            pool_timeout = 30,      # Timeout for getting a connection from the pool
-            connect_args = {'connect_timeout': TIMEOUT_SECONDS})
+    def engine(self, database:str, single_use:bool=False) -> Engine:
+        if single_use:
+            engine = self.engine_manager.get_temporary_engine(database)
+        else:
+            engine = self.engine_manager.get_engine(database)
+        return engine
 
-    async def preload_tables(self, db_tbls:list[tuple[str,str]])->None:
-        async for db,tbl in db_tbls:
-            _ = await self.get_table(db,tbl)
+    async def kill_engines(self):
+        await self.engine_manager.dispose_all()
 
-    async def get_table(self, database:str, table_name:str, engine):
+    async def preload_tables(self, *db_tbls:list[tuple[str,str]])->None:
+        for db,tbl in db_tbls:
+            _ = await self.get_table(db, tbl)
+
+    async def raise_event(self, event:str, *a, **kw):
+        hnd = self.event_handlers.get(event, None)
+        if hnd:
+            try:
+                if asyncio.iscoroutinefunction(hnd):
+                    await hnd(*a, **kw)
+                else:
+                    hnd(*a, **kw)
+            except Exception as err:
+                if not self.ignore_event_errors:
+                    raise err # re-raise
+
+    async def get_table(self, database:str, table_name:str):
+        engine = self.engine_manager.get_engine(database)
         table_cache = self.table_cache.get((database, table_name), None)
         if table_cache is None:
-            table_cache = await TableCache.new(database, table_name, engine)
+            table_cache = await TableCache.new(database, table_name, engine.ctx)
+            await self.raise_event("on_new_table", table_cache)
         elif table_cache.expired:
-            await table_cache.reset(engine)
+            await table_cache.reset(engine.ctx)
         self.table_cache[(database,table_name)] = table_cache
         return table_cache.table
 
     async def run(self, query, database=None, **dbr_args):
         database = self.database if database is None else database
-        engine = self.engine(database)
+        engine = self.engine_manager.get_engine(database)
         if isinstance(query, str):
             query = sql_text(query)
         dbr = DataBaseResponse(query, **dbr_args) # can be overwritten
         try:
-            dbr = await self.execute(engine, query, **dbr_args)
+            dbr = await self.execute(engine.ctx, query, **dbr_args)
         except Exception as e:
             print("An error occurred running custom query")
             dbr.error_info = e.__repr__()
+            tb = traceback.format_exc()
+            await self.raise_event("on_query_error", exc=e, tb=tb, dbr=dbr)
         finally:
-            await engine.dispose( close = True )
+            if engine.single_use:
+                await engine.kill()
         return dbr
 
     async def execute(self, engine, query, **dbr_args) -> DataBaseResponse:
@@ -119,7 +142,7 @@ class AsyncDataBase():
     async def get_header_info(self, database, table_name):
         if not database:
             database = self.database
-        hdrQry = f"SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = N'{table_name}'"
+        hdrQry = f"SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = N'{table_name}' AND TABLE_SCHEMA = N'{database}'"
         hdrRsp = await self.run(hdrQry, database)
         res = {x['COLUMN_NAME']: {k : self.convert_header_info(k, v) 
                                   for k,v in x.items()} for x in hdrRsp}
@@ -139,12 +162,12 @@ class AsyncDataBase():
     ### SELECT, INSERT, UPDATE, DELETE, UPSERT
     async def select(self, database:str, table_name:str, params:dict=None, columns:list=None, 
                distinct:bool=False, order_by:str=None, offset:int=None, limit:int=None, 
-               reverse:bool=None, textual:bool=False, response_model:object=None, 
-               as_decimals:bool=False) -> DataBaseResponse | str:
+               reverse:bool=None, textual:bool=False, response_model:object=None
+               ) -> DataBaseResponse | str:
         engine = self.engine(database)
         dbr = DataBaseResponse.default(database)
         try:
-            table = await self.get_table(database, table_name, engine)
+            table = await self.get_table(database, table_name)
             if columns:
                 query = select(*[table.c[col] for col in columns])
             else:
@@ -164,14 +187,16 @@ class AsyncDataBase():
             if textual:
                 txt = self.textualize(query)
                 return txt
-            dbr = await self.execute(engine, query, response_model=response_model, 
-                                    as_decimals=as_decimals)
+            dbr = await self.execute(engine.ctx, query, response_model=response_model)
         except Exception as e:
             dbr.successful = False
             dbr.error_info = e.__repr__()
+            tb = traceback.format_exc()
+            await self.raise_event("on_query_error", exc=e, tb=tb, dbr=dbr)
             raise e
         finally:
-            await engine.dispose()
+            if engine.single_use:
+                await engine.kill()
         return dbr
 
     async def insert(self, database:str, table_name:str,
@@ -180,7 +205,7 @@ class AsyncDataBase():
         engine = self.engine(database)
         dbr = DataBaseResponse.default(database)
         try:
-            table = await self.get_table(database, table_name, engine)
+            table = await self.get_table(database, table_name)
             records = await self.correct_types(database, table_name, records)
             if upsert:
                 if update_keys is None:
@@ -195,13 +220,14 @@ class AsyncDataBase():
             if textual:
                 txt = self.textualize(query)
                 return txt
-            dbr = await self.execute(engine, query)
+            dbr = await self.execute(engine.ctx, query)
         except Exception as e:
             dbr.successful = False
             dbr.error_info = e.__repr__()
             raise e
         finally:
-            await engine.dispose()
+            if engine.single_use:
+                await engine.kill()
         return dbr
 
     async def upsert(self, database:str, table_name:str,
@@ -217,20 +243,21 @@ class AsyncDataBase():
         engine = self.engine(database)
         dbr = DataBaseResponse.default(database)
         try:
-            table = await self.get_table(database, table_name, engine)
+            table = await self.get_table(database, table_name)
             query = sql_update(table)
             query = self._construct_conditions(query, table, where)
             query = query.values(**update)
             if textual:
                 txt = self.textualize(query)
                 return txt
-            dbr = await self.execute(engine, query)
+            dbr = await self.execute(engine.ctx, query)
         except Exception as e:
             dbr.successful = False
             dbr.error_info = e.__repr__()
             raise e
         finally:
-            await engine.dispose()
+            if engine.single_use:
+                await engine.kill()
         return dbr
         
     async def delete(self, database:str, table_name:str,
@@ -238,37 +265,39 @@ class AsyncDataBase():
         engine = self.engine(database)
         dbr = DataBaseResponse.default(database)
         try:
-            table = await self.get_table(database, table_name, engine)
+            table = await self.get_table(database, table_name)
             query = delete(table)
             query = self._construct_conditions(query, table, where)
             if textual:
                 txt = self.textualize(query)
                 return txt
-            dbr = await self.execute(engine, query)
+            dbr = await self.execute(engine.ctx, query)
         except Exception as e:
             dbr.successful = False
             dbr.error_info = e.__repr__()
             raise e
         finally:
-            await engine.dispose()
+            if engine.single_use:
+                await engine.kill()
         return dbr
     
     async def clear_table(self, database:str, table_name:str, textual:bool=False):
         engine = self.engine(database)
         dbr = DataBaseResponse.default(database)
         try:
-            table = await self.get_table(database, table_name, engine)
+            table = await self.get_table(database, table_name)
             query = delete(table)
             if textual:
                 txt = self.textualize(query)
                 return txt
-            dbr = await self.execute(engine, query)
+            dbr = await self.execute(engine.ctx, query)
         except Exception as e:
             dbr.successful = False
             dbr.error_info = e.__repr__()
             raise e
         finally:
-            await engine.dispose()
+            if engine.single_use:
+                await engine.kill()
         return dbr
 
     def get_custom_builder(self, request:list[str]):
@@ -280,13 +309,13 @@ class AsyncDataBase():
     ### QUERY CONSTRUCTORS
     @staticmethod
     def and_(conditions):
-        """Returns a callable for 'AND' condition."""
-        return lambda table, query: query.where(and_(*[AsyncDataBase._process_condition(table, cond) for cond in conditions]))
+        # implemented for legacy versions
+        return conditions
 
     @staticmethod
     def or_(conditions):
-        """Returns a callable for 'OR' condition."""
-        return lambda table, query: query.where(or_(*[AsyncDataBase._process_condition(table, cond) for cond in conditions]))
+        # implemented for legacy versions
+        return conditions
     
     @staticmethod
     def not_(func, *args):
@@ -294,9 +323,20 @@ class AsyncDataBase():
         return lambda col: sql_not(func(*args)(col))
     
     @staticmethod
-    def in_(values, _not=False):
+    def in_(values, _not=False, include_null:bool=None):
         """Returns a callable for 'in' condition."""
-        return lambda col: col.in_(values) if not _not else ~col.in_(values)
+        include_null = _not and include_null is None
+        if include_null:
+            def condition(col):
+                in_clause = col.in_(values)
+                null_clause = col.is_(None)
+                if _not:
+                    return sql_not(in_clause) | null_clause
+                else:
+                    return in_clause | null_clause
+            return condition
+        else:
+            return lambda col: col.in_(values) if not _not else ~col.in_(values)
 
     ### QUERY FRAGMENTS
     @staticmethod
@@ -324,20 +364,23 @@ class AsyncDataBase():
     def lessThan(value, orEqual, _not):
         return AsyncDataBase.less_than(value, orEqual, _not)
     @staticmethod
-    def equal_to(value, _not = False):
+    def equal_to(value, _not=False, include_null:bool=None):
+        include_null = _not and include_null is None
+        if include_null:
+            return lambda col: func.ifnull(col, '') == value if not _not else func.ifnull(col, '') != value
         return lambda col: col == value if not _not else col != value
     @staticmethod
-    def equalTo(value, _not=False):
-        return AsyncDataBase.equal_to(value, _not)
+    def equalTo(value, _not=False, include_null:bool=None):
+        return AsyncDataBase.equal_to(value, _not=_not, include_null=include_null)
     @staticmethod
-    def between(value1, value2, _not = False): # not inclusive
+    def between(value1, value2, _not=False): # not inclusive
         def f(col):
             v1 = min([value1, value2])
             v2 = max([value1, value2])
-            return col.between(v1, v2)
+            return col.between(v1, v2) if not _not else sql_not(col.between(v1, v2))
         return f
     @staticmethod
-    def after(date, inclusive = False, _not = False):
+    def after(date, inclusive = False, _not=False):
         return AsyncDataBase.greater_than(date, inclusive, _not)
     @staticmethod
     def before(date, inclusive = False, _not=False):
@@ -348,7 +391,7 @@ class AsyncDataBase():
             date = date.date()
         return AsyncDataBase.equal_to(date, _not)
     @staticmethod
-    def null(_not = False):
+    def null(_not=False):
         return lambda col: col.is_(None) if not _not else col.isnot(None)
     @staticmethod
     def like(value, _not=False):
@@ -374,31 +417,35 @@ class AsyncDataBase():
         return AsyncDataBase.like(f"%{value}%", _not)
     @staticmethod
     def custom(value:str):
-        lambda col: sql_text(f"`{col.table.name}`.`{col.key}` {value}")
+        return lambda col: sql_text(f"`{col.table.name}`.`{col.key}` {value}")
 
     @staticmethod
     def _process_condition(table, condition):
-        """Processes an individual condition, which can be a dict or a callable."""
-        if callable(condition):
-            # Condition is a callable (e.g., returned by DB.not_)
-            return condition(table)
-        elif isinstance(condition, dict):
-            # Condition is a dictionary of key-value pairs
-            return and_(*[table.c[key] == value if not callable(value) else value(table.c[key]) for key, value in condition.items()])
+        if isinstance(condition, dict):
+            conditions = []
+            for key, value in condition.items():
+                if key == '_AND_':
+                    conditions.append(and_(*[AsyncDataBase._process_condition(table, v) for v in value]))
+                elif key == '_OR_':
+                    conditions.append(or_(*[AsyncDataBase._process_condition(table, v) for v in value]))
+                elif callable(value):
+                    conditions.append(value(table.c[key]))
+                else:
+                    conditions.append(table.c[key] == value)
+            return conditions[0] if len(conditions) == 1 else and_(*conditions)
         else:
-            raise ValueError("Invalid condition format")
+            raise ValueError("Invalid condition format: Expected a dict or appropriate condition type.")
+
 
     def _construct_conditions(self, query, table, params):
-        """Applies conditions to the query."""
+        """Constructs complex conditions for the query."""
         for key, condition in params.items():
-            if key in {'_AND_', '_OR_'}:
-                # Assuming condition is a callable returned by DB.and_ or DB.or_
-                query = condition(table, query)
+            if key in ['_AND_', '_OR_']:
+                nested_condition = AsyncDataBase._process_condition(table, {key: condition})
+                query = query.where(nested_condition)
             elif callable(condition):
-                # Apply callable conditions
                 query = query.where(condition(table.c[key]))
             else:
-                # Apply simple key-value conditions
                 query = query.where(table.c[key] == condition)
         return query
     

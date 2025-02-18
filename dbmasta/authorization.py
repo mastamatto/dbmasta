@@ -37,7 +37,8 @@ class Authorization:
         self.host            = host
         self.port            = int(port)
         self.default_database= default_database
-        self.engine_name     = "asyncmy" if as_async else "pymysql"
+        self.engine_name     = "aiomysql" if as_async else "pymysql"
+    
     
     @classmethod
     def env(cls, as_async:bool=False):
@@ -49,15 +50,28 @@ class Authorization:
             - db_port        (port, ie 3306)
             - db_default     (default database name, ie my_db)
         """
+        username = os.getenv('db_username')
+        password = os.getenv('db_password')
+        host = os.getenv('db_host')
+        port = os.getenv('db_port')
+        default_database = os.getenv('db_default')
+        
+        assert username is not None, "Missing Env Var: db_username"
+        assert password is not None, "Missing Env Var: db_password"
+        assert host is not None, "Missing Env Var: db_host"
+        assert port is not None, "Missing Env Var: db_port"
+        assert default_database is not None, "Missing Env Var: db_default"
+        
         auth = cls(
-            username = os.getenv('db_username'),
-            password = os.getenv('db_password'),
-            host     = os.getenv('db_host'),
-            port     = os.getenv('db_port'),
-            default_database = os.getenv('db_default'),
+            username = username,
+            password = password,
+            host     = host,
+            port     = port,
+            default_database = default_database,
             as_async = as_async
         )
         return auth
+        
         
     def uri(self, database:str=None):
         database = database if database is not None else self.default_database
@@ -67,6 +81,7 @@ class Authorization:
             port=self.port, database=database
         )
         return uri
+    
     
     def __repr__(self):
         return f"<Database Authorization ({self.username})>"
