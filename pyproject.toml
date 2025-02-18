@@ -1,0 +1,30 @@
+[project]
+name = "dbmasta"
+version = "0.1.2"
+description = "A simple MariaDB client based on SQLAlchemy core"
+readme = "README.md"
+authors = [{ name = "Matt Owen", email = "matt@dealerclear.com" }]
+license = { file = "LICENSE" }
+requires-python = ">=3.7"
+dependencies = [
+    "sqlalchemy>=2.0.27",
+    "aiomysql",
+    "pymysql"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: OS Independent"
+]
+
+[project.urls]
+Homepage = "https://github.com/mastamatto/dbmasta"
+Repository = "https://github.com/mastamatto/dbmasta"
+Issues = "https://github.com/mastamatto/dbmasta/issues"
