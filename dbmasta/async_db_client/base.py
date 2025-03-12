@@ -20,6 +20,7 @@ TIMEOUT_SECONDS = 240
 
 class AsyncDataBase():
     Authorization = Authorization
+    
     BLDRS = {
         'select': select,
         'insert': insert,
@@ -34,6 +35,8 @@ class AsyncDataBase():
         'null': sql_null,
         'join': sql_join
     }
+    
+    
     def __init__(self,
                  auth:Authorization,
                  debug:bool=False,
@@ -52,11 +55,13 @@ class AsyncDataBase():
         }
         self.engine_manager = EngineManager(db=self)
         
+        
     ### INITIALIZERS
     @classmethod
     def env(cls, debug:bool=False):
         auth = Authorization.env(as_async=True)
         return cls(auth, debug=debug)
+
 
     def engine(self, database:str, single_use:bool=False) -> Engine:
         if single_use:
@@ -65,12 +70,15 @@ class AsyncDataBase():
             engine = self.engine_manager.get_engine(database)
         return engine
 
+
     async def kill_engines(self):
         await self.engine_manager.dispose_all()
+
 
     async def preload_tables(self, *db_tbls:list[tuple[str,str]])->None:
         for db,tbl in db_tbls:
             _ = await self.get_table(db, tbl)
+
 
     async def raise_event(self, event:str, *a, **kw):
         hnd = self.event_handlers.get(event, None)
@@ -84,6 +92,7 @@ class AsyncDataBase():
                 if not self.ignore_event_errors:
                     raise err # re-raise
 
+
     async def get_table(self, database:str, table_name:str):
         engine = self.engine_manager.get_engine(database)
         table_cache = self.table_cache.get((database, table_name), None)
@@ -94,6 +103,7 @@ class AsyncDataBase():
             await table_cache.reset(engine.ctx)
         self.table_cache[(database,table_name)] = table_cache
         return table_cache.table
+
 
     async def run(self, query, database=None, **dbr_args):
         database = self.database if database is None else database
@@ -113,6 +123,7 @@ class AsyncDataBase():
                 await engine.kill()
         return dbr
 
+
     async def execute(self, engine, query, **dbr_args) -> DataBaseResponse:
         dbr = DataBaseResponse(query, **dbr_args)
         async with engine.connect() as connection:
@@ -121,6 +132,7 @@ class AsyncDataBase():
             await dbr._receive(result)
         return dbr
 
+
     def convert_vals(self, key:str, value:object, 
                      coldata:dict, **kwargs):
         col = coldata[key]
@@ -128,6 +140,7 @@ class AsyncDataBase():
         # used for datatypes on 'write' queries
         val = col['DATA_TYPE'](value, **kwargs)
         return val.value
+
 
     def convert_header_info(self, mapp, value):
         if mapp == 'IS_NULLABLE':
@@ -139,6 +152,7 @@ class AsyncDataBase():
         else:
             return value
     
+    
     async def get_header_info(self, database, table_name):
         if not database:
             database = self.database
@@ -148,6 +162,7 @@ class AsyncDataBase():
                                   for k,v in x.items()} for x in hdrRsp}
         return res
 
+
     async def correct_types(self, database:str, table_name:str, records:list):
         coldata = await self.get_header_info(database, table_name)
         for r in records:
@@ -155,9 +170,11 @@ class AsyncDataBase():
                 r[k] = self.convert_vals(k, r[k], coldata)
         return records
 
+
     def textualize(self, query):
         txt = str(query.compile(compile_kwargs={"literal_binds": True}))
         return txt
+
 
     ### SELECT, INSERT, UPDATE, DELETE, UPSERT
     async def select(self, database:str, table_name:str, params:dict=None, columns:list=None, 
@@ -199,6 +216,26 @@ class AsyncDataBase():
                 await engine.kill()
         return dbr
 
+
+    async def select_pages(self, database:str, table_name:str, params:dict=None, columns:list=None, 
+                distinct:bool=False, order_by:str=None, page_size:int=25_000, 
+                reverse:bool=None, response_model:object=None):
+        """Automatically paginate larger queries
+        into smaller chunks. Returns a generator
+        """
+        limit = page_size
+        offset = 0
+        has_more = True
+        while has_more:
+            dbr = await self.select(database, table_name, params, columns=columns, distinct=distinct,
+                              order_by=order_by, limit=limit+1, offset=offset,
+                              reverse=reverse, response_model=response_model)
+            has_more = len(dbr) > limit
+            offset += limit
+            data = dbr.records[:min(len(dbr),limit)]
+            yield data
+
+
     async def insert(self, database:str, table_name:str,
                records:list, upsert:bool=False, 
                update_keys:list=None, textual:bool=False) -> DataBaseResponse | str:
@@ -230,6 +267,21 @@ class AsyncDataBase():
                 await engine.kill()
         return dbr
 
+
+    async def insert_pages(self, database:str, table_name:str, records:list[dict], 
+                     upsert:bool=False, update_keys:list=None, page_size:int=10_000):
+        max_ix = len(records)
+        start_ix = 0
+        while start_ix < max_ix:
+            end_ix = min(page_size + start_ix, max_ix)
+            ctx = records[start_ix:end_ix]
+            dbr = await self.insert(database, table_name, ctx, 
+                              upsert=upsert,
+                              update_keys=update_keys)
+            yield dbr
+            start_ix = end_ix
+
+
     async def upsert(self, database:str, table_name:str,
                records:list, update_keys:list=None, 
                textual:bool=False):
@@ -237,6 +289,20 @@ class AsyncDataBase():
                            records, upsert=True, 
                            update_keys=update_keys,
                            textual=textual)
+
+
+    async def upsert_pages(self, database:str, table_name:str, records:list[dict], 
+                    update_keys:list=None, page_size:int=10_000):
+        max_ix = len(records)
+        start_ix = 0
+        while start_ix < max_ix:
+            end_ix = min(page_size + start_ix, max_ix)
+            ctx = records[start_ix:end_ix]
+            dbr = await self.upsert(database, table_name, ctx, 
+                            update_keys=update_keys)
+            yield dbr
+            start_ix = end_ix
+
 
     async def update(self, database:str, table_name:str, 
                update:dict={}, where:dict={}, textual:bool=False):
@@ -260,6 +326,7 @@ class AsyncDataBase():
                 await engine.kill()
         return dbr
         
+        
     async def delete(self, database:str, table_name:str,
                where:dict, textual:bool=False):
         engine = self.engine(database)
@@ -280,6 +347,7 @@ class AsyncDataBase():
             if engine.single_use:
                 await engine.kill()
         return dbr
+    
     
     async def clear_table(self, database:str, table_name:str, textual:bool=False):
         engine = self.engine(database)
@@ -307,20 +375,24 @@ class AsyncDataBase():
         return output
 
     ### QUERY CONSTRUCTORS
+    
     @staticmethod
     def and_(conditions):
         # implemented for legacy versions
         return conditions
 
+    
     @staticmethod
     def or_(conditions):
         # implemented for legacy versions
         return conditions
     
+    
     @staticmethod
     def not_(func, *args):
         """Returns a negated condition."""
         return lambda col: sql_not(func(*args)(col))
+    
     
     @staticmethod
     def in_(values, _not=False, include_null:bool=None):
@@ -339,6 +411,7 @@ class AsyncDataBase():
             return lambda col: col.in_(values) if not _not else ~col.in_(values)
 
     ### QUERY FRAGMENTS
+    
     @staticmethod
     def greater_than(value, or_equal:bool=False, _not=False):
         """Returns a callable for greater than condition."""
@@ -348,9 +421,13 @@ class AsyncDataBase():
             else:
                 return col > value if not _not else col <= value
         return f
+    
+    
     @staticmethod
     def greaterThan(value, orEqual, _not):
         return AsyncDataBase.greater_than(value, orEqual, _not)
+    
+    
     @staticmethod
     def less_than(value, or_equal:bool=False, _not=False):
         """Returns a callable for greater than condition."""
@@ -360,18 +437,26 @@ class AsyncDataBase():
             else:
                 return col < value if not _not else col >= value
         return f
+    
+    
     @staticmethod
     def lessThan(value, orEqual, _not):
         return AsyncDataBase.less_than(value, orEqual, _not)
+    
+    
     @staticmethod
     def equal_to(value, _not=False, include_null:bool=None):
         include_null = _not and include_null is None
         if include_null:
             return lambda col: func.ifnull(col, '') == value if not _not else func.ifnull(col, '') != value
         return lambda col: col == value if not _not else col != value
+    
+    
     @staticmethod
     def equalTo(value, _not=False, include_null:bool=None):
         return AsyncDataBase.equal_to(value, _not=_not, include_null=include_null)
+    
+    
     @staticmethod
     def between(value1, value2, _not=False): # not inclusive
         def f(col):
@@ -379,45 +464,70 @@ class AsyncDataBase():
             v2 = max([value1, value2])
             return col.between(v1, v2) if not _not else sql_not(col.between(v1, v2))
         return f
+    
+    
     @staticmethod
     def after(date, inclusive = False, _not=False):
         return AsyncDataBase.greater_than(date, inclusive, _not)
+    
+    
     @staticmethod
     def before(date, inclusive = False, _not=False):
         return AsyncDataBase.less_than(date, inclusive, _not)
+    
+    
     @staticmethod
     def onDay(date, _not = False):
         if isinstance(date, dt.datetime):
             date = date.date()
         return AsyncDataBase.equal_to(date, _not)
+    
+    
     @staticmethod
     def null(_not=False):
         return lambda col: col.is_(None) if not _not else col.isnot(None)
+    
+    
     @staticmethod
     def like(value, _not=False):
         return lambda col: col.like(value) if not _not else col.not_like(value)
+    
+    
     @staticmethod
     def starts_with(value, _not=False):
         """Returns a callable for starts with condition."""
         return AsyncDataBase.like(f"{value}%", _not)
+    
+    
     @staticmethod
     def startsWith(value, _not=False):
         return AsyncDataBase.starts_with(value, _not)
+    
+    
     @staticmethod
     def ends_with(value, _not=False):
         return AsyncDataBase.like(f"%{value}", _not)
+    
+    
     @staticmethod
     def endsWith(value, _not=False):
         return AsyncDataBase.ends_with(value, _not)
+    
+    
     @staticmethod
     def regex(value, _not=False):
         return lambda col: col.regexp_match(value) if not _not else ~col.regexp_match(value)
+    
+    
     @staticmethod
     def contains(value, _not=False):
         return AsyncDataBase.like(f"%{value}%", _not)
+    
+    
     @staticmethod
     def custom(value:str):
         return lambda col: sql_text(f"`{col.table.name}`.`{col.key}` {value}")
+
 
     @staticmethod
     def _process_condition(table, condition):
@@ -449,5 +559,6 @@ class AsyncDataBase():
                 query = query.where(table.c[key] == condition)
         return query
     
+    
     def __repr__(self):
-        return f"<DB ({self.auth.user})>"
+        return f"<DB ({self.auth.username})>"

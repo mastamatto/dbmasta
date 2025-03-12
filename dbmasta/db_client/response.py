@@ -63,7 +63,7 @@ class DataBaseResponse():
                 if isinstance(row[k], Decimal):
                     row[k] = float(row[k])
         # see if we need to return models or just dictionaries
-        if self.response_model is None and self.as_datapoints:
+        if self.response_model is None:
             maker = lambda row: row
         elif self.response_model is not None:
             maker = self.response_model

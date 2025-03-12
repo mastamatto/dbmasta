@@ -143,6 +143,7 @@ class DataBase:
         else:
             return value
     
+    
     def get_header_info(self, database, table_name) -> dict:
         if not database:
             database = self.database
@@ -153,6 +154,7 @@ class DataBase:
                                   for k,v in x.items()} for x in hdrRsp}
         return res
 
+
     def correct_types(self, database:str, table_name:str, records:list):
         coldata = self.get_header_info(database, table_name)
         for r in records:
@@ -160,15 +162,17 @@ class DataBase:
                 r[k] = self.convert_vals(k, r[k], coldata)
         return records
 
+
     def textualize(self, query):
         txt = str(query.compile(compile_kwargs={"literal_binds": True}))
         return txt
+
 
     ### SELECT, INSERT, UPDATE, DELETE, UPSERT
     def select(self, database:str, table_name:str, params:dict=None, columns:list=None, 
                distinct:bool=False, order_by:str=None, offset:int=None, limit:int=None, 
                reverse:bool=None, textual:bool=False, response_model:object=None, 
-               as_datapoints:bool=False, as_decimals:bool=False) -> DataBaseResponse | str:
+               as_decimals:bool=False) -> DataBaseResponse | str:
         engine = self.engine(database)
         dbr = DataBaseResponse.default(database)
         try:
@@ -191,7 +195,7 @@ class DataBase:
             if textual:
                 dbr = self.textualize(query)
             else:
-                dbr = self.execute(engine, query, response_model=response_model, as_datapoints=as_datapoints, as_decimals=as_decimals)
+                dbr = self.execute(engine, query, response_model=response_model, as_decimals=as_decimals)
         except Exception as e:
             dbr.error_info = str(e.__repr__())
             dbr.successful = False
@@ -199,6 +203,26 @@ class DataBase:
         finally:
             engine.dispose()
         return dbr
+
+
+    def select_pages(self, database:str, table_name:str, params:dict=None, columns:list=None, 
+                distinct:bool=False, order_by:str=None, page_size:int=25_000, 
+                reverse:bool=None, response_model:object=None):
+        """Automatically paginate larger queries
+        into smaller chunks. Returns a generator
+        """
+        limit = page_size
+        offset = 0
+        has_more = True
+        while has_more:
+            dbr = self.select(database, table_name, params, columns=columns, distinct=distinct,
+                              order_by=order_by, limit=limit+1, offset=offset,
+                              reverse=reverse, response_model=response_model)
+            has_more = len(dbr) > limit
+            offset += limit
+            data = dbr.records[:min(len(dbr),limit)]
+            yield data
+
 
     def insert(self, database:str, table_name:str,
                records:list, upsert:bool=False, 
@@ -231,6 +255,21 @@ class DataBase:
             engine.dispose()
         return dbr
 
+
+    def insert_pages(self, database:str, table_name:str, records:list[dict], 
+                     upsert:bool=False, update_keys:list=None, page_size:int=10_000):
+        max_ix = len(records)
+        start_ix = 0
+        while start_ix < max_ix:
+            end_ix = min(page_size + start_ix, max_ix)
+            ctx = records[start_ix:end_ix]
+            dbr = self.insert(database, table_name, ctx, 
+                              upsert=upsert,
+                              update_keys=update_keys)
+            yield dbr
+            start_ix = end_ix
+    
+
     def upsert(self, database:str, table_name:str,
                records:list, update_keys:list=None, 
                textual:bool=False) -> DataBaseResponse | str:
@@ -238,6 +277,20 @@ class DataBase:
                            records, upsert=True, 
                            update_keys=update_keys,
                            textual=textual)
+
+
+    def upsert_pages(self, database:str, table_name:str, records:list[dict], 
+                    update_keys:list=None, page_size:int=10_000):
+        max_ix = len(records)
+        start_ix = 0
+        while start_ix < max_ix:
+            end_ix = min(page_size + start_ix, max_ix)
+            ctx = records[start_ix:end_ix]
+            dbr = self.upsert(database, table_name, ctx, 
+                            update_keys=update_keys)
+            yield dbr
+            start_ix = end_ix
+
 
     def update(self, database:str, table_name:str, 
                update:dict={}, where:dict={}, textual:bool=False) -> DataBaseResponse | str:
@@ -260,6 +313,7 @@ class DataBase:
             engine.dispose()
         return dbr
         
+        
     def delete(self, database:str, table_name:str,
                where:dict, textual:bool=False) -> DataBaseResponse | str:
         engine = self.engine(database)
@@ -280,6 +334,7 @@ class DataBase:
             engine.dispose()
         return dbr
     
+    
     def clear_table(self, database:str, table_name:str, textual:bool=False):
         engine = self.engine(database)
         dbr = DataBaseResponse.default(database)
@@ -298,11 +353,13 @@ class DataBase:
             engine.dispose()
         return dbr
  
+ 
     def get_custom_builder(self, request:list[str]):
         output = [
             self.BLDRS.get(bldr, None) for bldr in request
         ]
         return output
+
 
     ### QUERY CONSTRUCTORS
     @staticmethod
@@ -310,15 +367,18 @@ class DataBase:
         # implemented for legacy versions
         return conditions
 
+
     @staticmethod
     def or_(conditions):
         # implemented for legacy versions
         return conditions
     
+    
     @staticmethod
     def not_(func, *args):
         """Returns a negated condition."""
         return lambda col: sql_not(func(*args)(col))
+    
     
     @staticmethod
     def in_(values, _not=False, include_null:bool=None):
@@ -336,6 +396,7 @@ class DataBase:
         else:
             return lambda col: col.in_(values) if not _not else ~col.in_(values)
 
+
     ### QUERY FRAGMENTS
     @staticmethod
     def greater_than(value, or_equal:bool=False, _not=False):
@@ -346,9 +407,13 @@ class DataBase:
             else:
                 return col > value if not _not else col <= value
         return f
+    
+    
     @staticmethod
     def greaterThan(value, orEqual, _not):
         return DataBase.greater_than(value, orEqual, _not)
+    
+    
     @staticmethod
     def less_than(value, or_equal:bool=False, _not=False):
         """Returns a callable for greater than condition."""
@@ -358,18 +423,26 @@ class DataBase:
             else:
                 return col < value if not _not else col >= value
         return f
+    
+    
     @staticmethod
     def lessThan(value, orEqual, _not):
         return DataBase.less_than(value, orEqual, _not)
+    
+    
     @staticmethod
     def equal_to(value, _not=False, include_null:bool=None):
         include_null = _not and include_null is None
         if include_null:
             return lambda col: func.ifnull(col, '') == value if not _not else func.ifnull(col, '') != value
         return lambda col: col == value if not _not else col != value
+    
+    
     @staticmethod
     def equalTo(value, _not=False, include_null:bool=None):
         return DataBase.equal_to(value, _not=_not, include_null=include_null)
+    
+    
     @staticmethod
     def between(value1, value2, _not=False): # not inclusive
         def f(col):
@@ -377,45 +450,70 @@ class DataBase:
             v2 = max([value1, value2])
             return col.between(v1, v2) if not _not else sql_not(col.between(v1, v2))
         return f
+    
+    
     @staticmethod
     def after(date, inclusive = False, _not = False):
         return DataBase.greater_than(date, inclusive, _not)
+    
+    
     @staticmethod
     def before(date, inclusive = False, _not=False):
         return DataBase.less_than(date, inclusive, _not)
+    
+    
     @staticmethod
     def onDay(date, _not = False):
         if isinstance(date, dt.datetime):
             date = date.date()
         return DataBase.equal_to(date, _not)
+    
+    
     @staticmethod
     def null(_not = False):
         return lambda col: col.is_(None) if not _not else col.isnot(None)
+    
+    
     @staticmethod
     def like(value, _not=False):
         return lambda col: col.like(value) if not _not else col.not_like(value)
+    
+    
     @staticmethod
     def starts_with(value, _not=False):
         """Returns a callable for starts with condition."""
         return DataBase.like(f"{value}%", _not)
+    
+    
     @staticmethod
     def startsWith(value, _not=False):
         return DataBase.starts_with(value, _not)
+    
+    
     @staticmethod
     def ends_with(value, _not=False):
         return DataBase.like(f"%{value}", _not)
+    
+    
     @staticmethod
     def endsWith(value, _not=False):
         return DataBase.ends_with(value, _not)
+    
+    
     @staticmethod
     def regex(value, _not=False):
         return lambda col: col.regexp_match(value) if not _not else ~col.regexp_match(value)
+    
+    
     @staticmethod
     def contains(value, _not=False):
         return DataBase.like(f"%{value}%", _not)
+    
+    
     @staticmethod
     def custom(value:str):
         return lambda col: sql_text(f"`{col.table.name}`.`{col.key}` {value}")
+
 
     @staticmethod
     def _process_condition(table, condition):
@@ -434,6 +532,7 @@ class DataBase:
         else:
             raise ValueError("Invalid condition format: Expected a dict or appropriate condition type.")
 
+
     def _construct_conditions(self, query, table, params):
         """Constructs complex conditions for the query."""
         for key, condition in params.items():
@@ -446,5 +545,6 @@ class DataBase:
                 query = query.where(table.c[key] == condition)
         return query
     
+    
     def __repr__(self):
-        return f"<DB ({self.auth.user})>"
+        return f"<DB ({self.auth.username})>"
