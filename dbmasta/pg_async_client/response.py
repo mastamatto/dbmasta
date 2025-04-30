@@ -5,12 +5,12 @@ from sqlalchemy.dialects import mysql
 class DataBaseResponse():
     def __init__(self,
                  query,
+                 schema:str=None,
                  as_decimals:bool=True,
                  response_model:object=None,
                  **dbr_args
                  ):
         # defaults
-        self.database = None
         self.query    = query
         if query is None:
             self.raw_query = None
@@ -34,9 +34,9 @@ class DataBaseResponse():
             print(f"WARNING!\nTHE FOLLOWING DataBaseResponse CONFIGURATION ARGUMENTS HAVEN'T BEEN CONFIGURED YET: \n{keys}")
         
     @classmethod
-    def default(cls, database:str):
+    def default(cls, schema:str):
         dbr = cls(None)
-        dbr.database = database
+        dbr.schema = schema
         return dbr
         
     async def _receive(self, result):

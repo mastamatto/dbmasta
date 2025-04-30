@@ -21,6 +21,7 @@ from .response import DataBaseResponse
 from dbmasta.sql_types_pg import type_map
 from .tables import TableCache
 
+
 DEBUG = False
 NULLPOOL_LIMIT  = 10_000
 TIMEOUT_SECONDS = 240
@@ -129,7 +130,7 @@ class DataBase:
         col = coldata[key]
         kwargs.update(col)
         # used for datatypes on 'write' queries
-        val = col['DATA_TYPE'](value, **kwargs)
+        val = col['data_type'](value, **kwargs)
         return val.value
 
 
@@ -242,7 +243,7 @@ class DataBase:
                     ]
                 stmt = insert(table).values(records)
                 update_dict = {k: stmt.inserted[k] for k in update_keys}
-                query = stmt.on_duplicate_key_update(**update_dict)
+                query = stmt.on_conflict_do_update(**update_dict)
             else:
                 query = insert(table).values(records)
             if textual:
@@ -515,6 +516,11 @@ class DataBase:
     @staticmethod
     def custom(value:str):
         return lambda col: sql_text(f"`{col.table.name}`.`{col.key}` {value}")
+
+
+    @staticmethod
+    def json_like(value, _not=False):
+        return lambda col: col.jsonb_contains(value) if not _not else ~col.jsonb_contains(value)
 
 
     @staticmethod

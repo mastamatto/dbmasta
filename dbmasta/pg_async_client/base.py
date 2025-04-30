@@ -93,24 +93,23 @@ class AsyncDataBase():
                     raise err # re-raise
 
 
-    async def get_table(self, database:str, table_name:str):
-        engine = self.engine_manager.get_engine(database)
-        table_cache = self.table_cache.get((database, table_name), None)
+    async def get_table(self, schema:str, table_name:str):
+        engine = self.engine_manager.get_engine()
+        table_cache = self.table_cache.get((schema, table_name), None)
         if table_cache is None:
-            table_cache = await TableCache.new(database, table_name, engine.ctx)
+            table_cache = await TableCache.new(schema, table_name, engine.ctx)
             await self.raise_event("on_new_table", table_cache)
         elif table_cache.expired:
             await table_cache.reset(engine.ctx)
-        self.table_cache[(database,table_name)] = table_cache
+        self.table_cache[(schema,table_name)] = table_cache
         return table_cache.table
 
 
-    async def run(self, query, database=None, **dbr_args):
-        database = self.database if database is None else database
-        engine = self.engine_manager.get_engine(database)
+    async def run(self, query, schema, **dbr_args):
+        engine = self.engine_manager.get_engine(schema)
         if isinstance(query, str):
             query = sql_text(query)
-        dbr = DataBaseResponse(query, **dbr_args) # can be overwritten
+        dbr = DataBaseResponse(query, schema=schema, **dbr_args)
         try:
             dbr = await self.execute(engine.ctx, query, **dbr_args)
         except Exception as e:
@@ -138,33 +137,35 @@ class AsyncDataBase():
         col = coldata[key]
         kwargs.update(col)
         # used for datatypes on 'write' queries
-        val = col['DATA_TYPE'](value, **kwargs)
+        val = col['data_type'](value, **kwargs)
         return val.value
 
 
     def convert_header_info(self, mapp, value):
-        if mapp == 'IS_NULLABLE':
+        if mapp == 'is_nullable':
             return value == 'YES'
-        elif mapp == 'DATA_TYPE':
-            return type_map[str(value).upper()]
-        elif mapp == 'COLUMN_TYPE':
+        elif mapp == 'data_type':
+            return type_map[value]
+        elif mapp == 'column_type':
             return value.upper()
         else:
             return value
     
     
-    async def get_header_info(self, database, table_name):
-        if not database:
-            database = self.database
-        hdrQry = f"SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = N'{table_name}' AND TABLE_SCHEMA = N'{database}'"
-        hdrRsp = await self.run(hdrQry, database)
-        res = {x['COLUMN_NAME']: {k : self.convert_header_info(k, v) 
-                                  for k,v in x.items()} for x in hdrRsp}
+    async def get_header_info(self, schema, table_name):
+        query = f"""
+            SELECT * FROM information_schema.columns 
+            WHERE table_name = '{table_name}' AND table_schema = '{schema}'
+        """
+        response = await self.run(query, schema)
+        assert len(response) > 0, f"Table Does Not Exist: {table_name}"
+        res = {x['column_name']: {k : self.convert_header_info(k, v) 
+                                  for k,v in x.items()} for x in response}
         return res
 
 
-    async def correct_types(self, database:str, table_name:str, records:list):
-        coldata = await self.get_header_info(database, table_name)
+    async def correct_types(self, schema:str, table_name:str, records:list):
+        coldata = await self.get_header_info(schema, table_name)
         for r in records:
             for k in r:
                 r[k] = self.convert_vals(k, r[k], coldata)
@@ -177,14 +178,14 @@ class AsyncDataBase():
 
 
     ### SELECT, INSERT, UPDATE, DELETE, UPSERT
-    async def select(self, database:str, table_name:str, params:dict=None, columns:list=None, 
+    async def select(self, schema:str, table_name:str, params:dict=None, columns:list=None, 
                distinct:bool=False, order_by:str=None, offset:int=None, limit:int=None, 
                reverse:bool=None, textual:bool=False, response_model:object=None
                ) -> DataBaseResponse | str:
-        engine = self.engine(database)
-        dbr = DataBaseResponse.default(database)
+        engine = self.engine()
+        dbr = DataBaseResponse.default(schema)
         try:
-            table = await self.get_table(database, table_name)
+            table = await self.get_table(schema, table_name)
             if columns:
                 query = select(*[table.c[col] for col in columns])
             else:
@@ -217,7 +218,7 @@ class AsyncDataBase():
         return dbr
 
 
-    async def select_pages(self, database:str, table_name:str, params:dict=None, columns:list=None, 
+    async def select_pages(self, schema:str, table_name:str, params:dict=None, columns:list=None, 
                 distinct:bool=False, order_by:str=None, page_size:int=25_000, 
                 reverse:bool=None, response_model:object=None):
         """Automatically paginate larger queries
@@ -227,7 +228,7 @@ class AsyncDataBase():
         offset = 0
         has_more = True
         while has_more:
-            dbr = await self.select(database, table_name, params, columns=columns, distinct=distinct,
+            dbr = await self.select(schema, table_name, params, columns=columns, distinct=distinct,
                               order_by=order_by, limit=limit+1, offset=offset,
                               reverse=reverse, response_model=response_model)
             has_more = len(dbr) > limit
@@ -236,22 +237,23 @@ class AsyncDataBase():
             yield data
 
 
-    async def insert(self, database:str, table_name:str,
+    async def insert(self, schema:str, table_name:str,
                records:list, upsert:bool=False, 
                update_keys:list=None, textual:bool=False) -> DataBaseResponse | str:
-        engine = self.engine(database)
-        dbr = DataBaseResponse.default(database)
+        engine = self.engine()
+        dbr = DataBaseResponse.default(schema)
         try:
-            table = await self.get_table(database, table_name)
-            records = await self.correct_types(database, table_name, records)
+            table = await self.get_table(schema, table_name)
+            records = await self.correct_types(schema, table_name, records)
             if upsert:
-                if update_keys is None:
+                updateskeysnone = update_keys is None
+                if updateskeysnone:
                     update_keys = [
                         c.key for c in table.c
                     ]
                 stmt = insert(table).values(records)
                 update_dict = {k: stmt.inserted[k] for k in update_keys}
-                query = stmt.on_duplicate_key_update(**update_dict)
+                query = stmt.on_conflict_do_update(**update_dict)
             else:
                 query = insert(table).values(records)
             if textual:
@@ -268,48 +270,48 @@ class AsyncDataBase():
         return dbr
 
 
-    async def insert_pages(self, database:str, table_name:str, records:list[dict], 
+    async def insert_pages(self, schema:str, table_name:str, records:list[dict], 
                      upsert:bool=False, update_keys:list=None, page_size:int=10_000):
         max_ix = len(records)
         start_ix = 0
         while start_ix < max_ix:
             end_ix = min(page_size + start_ix, max_ix)
             ctx = records[start_ix:end_ix]
-            dbr = await self.insert(database, table_name, ctx, 
+            dbr = await self.insert(schema, table_name, ctx, 
                               upsert=upsert,
                               update_keys=update_keys)
             yield dbr
             start_ix = end_ix
 
 
-    async def upsert(self, database:str, table_name:str,
+    async def upsert(self, schema:str, table_name:str,
                records:list, update_keys:list=None, 
                textual:bool=False):
-        return await self.insert(database, table_name,
+        return await self.insert(schema, table_name,
                            records, upsert=True, 
                            update_keys=update_keys,
                            textual=textual)
 
 
-    async def upsert_pages(self, database:str, table_name:str, records:list[dict], 
+    async def upsert_pages(self, schema:str, table_name:str, records:list[dict], 
                     update_keys:list=None, page_size:int=10_000):
         max_ix = len(records)
         start_ix = 0
         while start_ix < max_ix:
             end_ix = min(page_size + start_ix, max_ix)
             ctx = records[start_ix:end_ix]
-            dbr = await self.upsert(database, table_name, ctx, 
+            dbr = await self.upsert(schema, table_name, ctx, 
                             update_keys=update_keys)
             yield dbr
             start_ix = end_ix
 
 
-    async def update(self, database:str, table_name:str, 
+    async def update(self, schema:str, table_name:str, 
                update:dict={}, where:dict={}, textual:bool=False):
-        engine = self.engine(database)
-        dbr = DataBaseResponse.default(database)
+        engine = self.engine()
+        dbr = DataBaseResponse.default(schema)
         try:
-            table = await self.get_table(database, table_name)
+            table = await self.get_table(schema, table_name)
             query = sql_update(table)
             query = self._construct_conditions(query, table, where)
             query = query.values(**update)
@@ -327,12 +329,12 @@ class AsyncDataBase():
         return dbr
         
         
-    async def delete(self, database:str, table_name:str,
+    async def delete(self, schema:str, table_name:str,
                where:dict, textual:bool=False):
-        engine = self.engine(database)
-        dbr = DataBaseResponse.default(database)
+        engine = self.engine()
+        dbr = DataBaseResponse.default(schema)
         try:
-            table = await self.get_table(database, table_name)
+            table = await self.get_table(schema, table_name)
             query = delete(table)
             query = self._construct_conditions(query, table, where)
             if textual:
@@ -349,11 +351,11 @@ class AsyncDataBase():
         return dbr
     
     
-    async def clear_table(self, database:str, table_name:str, textual:bool=False):
-        engine = self.engine(database)
-        dbr = DataBaseResponse.default(database)
+    async def clear_table(self, schema:str, table_name:str, textual:bool=False):
+        engine = self.engine()
+        dbr = DataBaseResponse.default(schema)
         try:
-            table = await self.get_table(database, table_name)
+            table = await self.get_table(schema, table_name)
             query = delete(table)
             if textual:
                 txt = self.textualize(query)

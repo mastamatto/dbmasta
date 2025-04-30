@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import datetime as dt
 import json
+import uuid
 from dbmasta.exceptions import InvalidDate
 
 
@@ -308,6 +309,76 @@ class JSONB:
         if self.value is None and self.nullable:
             return 'NULL'
         return f"'{json.dumps(self.value)}'"
+
+    def __repr__(self):
+        return str(self.value)
+    
+    
+class POINT:
+    _type = tuple
+    def __init__(self, value, **kwargs):
+        self._value = value  # Should be tuple (x, y)
+        unpack(self, **kwargs)
+
+    @property
+    def value(self):
+        if isinstance(self._value, (tuple, list)) and len(self._value) == 2:
+            return tuple(map(float, self._value))
+        return None
+
+    @property
+    def SQL(self):
+        if self.value:
+            return f"'({self.value[0]}, {self.value[1]})'"
+        return 'NULL'
+
+    def __repr__(self):
+        return str(self.value)
+
+
+class NUMERIC(DECIMAL): pass
+
+
+class MONEY(FLOAT):
+    pass
+
+
+class BYTEA:
+    _type = bytes
+    def __init__(self, value, **kwargs):
+        self._value = value
+        unpack(self, **kwargs)
+
+    @property
+    def value(self):
+        return self._value
+
+    @property
+    def SQL(self):
+        return f"E'\\x{self._value.hex()}'" if self._value else 'NULL'
+
+    def __repr__(self):
+        return str(self._value)
+
+
+
+
+class UUID:
+    _type = str
+    def __init__(self, value, **kwargs):
+        self._value = value
+        unpack(self, **kwargs)
+
+    @property
+    def value(self):
+        try:
+            return str(uuid.UUID(str(self._value)))
+        except Exception:
+            return None
+
+    @property
+    def SQL(self):
+        return f"'{self.value}'" if self.value else 'NULL'
 
     def __repr__(self):
         return str(self.value)

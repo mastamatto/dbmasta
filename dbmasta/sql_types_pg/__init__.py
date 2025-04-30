@@ -1,10 +1,10 @@
 from .sql_types import *
 
 type_map = {
-    'character varying': VARCHAR,
-    'varchar': VARCHAR,
     'character': CHAR,
     'char': CHAR,
+    'character varying': VARCHAR,
+    'varchar': VARCHAR,
     'text': TEXT,
     'boolean': BOOL,
     'bool': BOOL,
@@ -13,15 +13,17 @@ type_map = {
     'smallint': SMALLINT,
     'bigint': BIGINT,
     'decimal': DECIMAL,
-    'numeric': DECIMAL,
+    'numeric': NUMERIC,
     'real': FLOAT,
     'double precision': DOUBLE,
+    'money': MONEY,
     'date': DATE,
-    'timestamp': TIMESTAMP,
     'timestamp without time zone': TIMESTAMP,
-    'timestamp with time zone': TIMESTAMPTZ,  # assuming you added this in `sql_types`
-    'time': TIME,
+    'timestamp with time zone': TIMESTAMPTZ,
     'time without time zone': TIME,
+    'uuid': UUID,
     'json': JSONTYPE,
-    'jsonb': JSONB
+    'jsonb': JSONB,
+    'bytea': BYTEA,
+    'point': POINT
 }
