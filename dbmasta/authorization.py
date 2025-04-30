@@ -1,14 +1,27 @@
 # -*- coding: utf-8 -*-
 import os
+from typing import Literal
+
+
+ENGINE = Literal["aiomysql", "pymysql", "aiopg", "psycopg2","postgresql"]
+ENGINE_MAP = {
+    "aiomysql": "mysql+aiomysql",
+    "pymysql": "mysql+pymysql",
+    "aiopg": "postgresql+aiopg",
+    "psycopg2": "postgresql+psycopg2",
+    # "postgresql": "postgresql"
+}
+
 
 class Authorization:
     def __init__(self,
                  username:str,
                  password:str,
                  host:str,
-                 port:int,
                  default_database:str,
-                 as_async:bool=False
+                 port:int=None,
+                 engine:ENGINE="aiomysql",
+                 extra_connection_params:dict=None
                  ):
         """Authentication management
         
@@ -35,9 +48,12 @@ class Authorization:
         self.username        = username
         self.password        = password
         self.host            = host
-        self.port            = int(port)
+        self.port            = int(port) if port else None
         self.default_database= default_database
-        self.engine_name     = "aiomysql" if as_async else "pymysql"
+        self.engine_name     = engine
+        self.engine          = ENGINE_MAP[engine]
+        self.dialect         = "postgresql" if self.engine_name in ["aiopg", "psycopg2", "postgresql"] else "mysql"
+        self.extra_connection_params = extra_connection_params or {}
     
     
     @classmethod
@@ -72,14 +88,32 @@ class Authorization:
         )
         return auth
         
+    
+        
         
     def uri(self, database:str=None):
+        if self.dialect == "postgresql":
+            database = self.default_database
         database = database if database is not None else self.default_database
-        uri = "mysql+{engine}://{user}:{password}@{host}:{port}/{database}".format(
-            engine=self.engine_name,
-            user= self.username, password=self.password, host=self.host, 
-            port=self.port, database=database
+        host = self.host
+        if self.port:
+            host += f":{self.port}"
+        uri = "{engine}://{user}:{password}@{host}/{database}".format(
+            engine=self.engine,
+            user= self.username, 
+            password=self.password, 
+            host=self.host, 
+            port=self.port, 
+            database=database
         )
+        if self.extra_connection_params:
+            params = []
+            for key,value in self.extra_connection_params.items():
+                ctx = f"{key}={value}"
+                params.append(ctx)
+            if params:
+                param = "&".join(params)
+                uri = f"{uri}?{param}"
         return uri
     
     
