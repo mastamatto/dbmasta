@@ -530,6 +530,9 @@ class AsyncDataBase():
     def custom(value:str):
         return lambda col: sql_text(f"`{col.table.name}`.`{col.key}` {value}")
 
+    @staticmethod
+    def json_like(value, _not=False):
+        return lambda col: col.jsonb_contains(value) if not _not else ~col.jsonb_contains(value)
 
     @staticmethod
     def _process_condition(table, condition):
