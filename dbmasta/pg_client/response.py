@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from decimal import Decimal
-from sqlalchemy.dialects import mysql
+from sqlalchemy.dialects import postgresql
 
 class DataBaseResponse():
     def __init__(self,
@@ -16,7 +16,7 @@ class DataBaseResponse():
             self.raw_query = None
         else:
             self.raw_query = str(query.compile(
-                dialect=mysql.dialect(),
+                dialect=postgresql.dialect(),
                 compile_kwargs={"literal_binds": False})
                 )
         self.as_decimals = as_decimals

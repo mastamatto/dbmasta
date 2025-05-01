@@ -143,7 +143,8 @@ class DataBase:
     def execute(self, engine, query, **dbr_args) -> DataBaseResponse:
         dbr = DataBaseResponse(query, **dbr_args)
         with engine.connect() as connection:
-            result = connection.execute(query)
+            compiled = query.compile(dialect=engine.dialect)
+            result = connection.execute(compiled)
             connection.commit()
             dbr._receive(result)
         return dbr
@@ -276,22 +277,23 @@ class DataBase:
 
     def insert(self, schema:str, table_name:str,
                records:list, upsert:bool=False, 
-               update_keys:list=None, textual:bool=False) -> DataBaseResponse | str:
+               update_fields:list=None, textual:bool=False) -> DataBaseResponse | str:
         engine = self.engine()
         dbr = DataBaseResponse.default(schema)
         try:
             table = self.get_table(schema, table_name, engine)
             # clean dtypes
             records = self.correct_types(schema, table_name, records)
-            updateskeysnone = update_keys is None
+            updatesfieldsnone = update_fields is None
             if upsert:
-                if updateskeysnone:
-                    update_keys = [
+                if updatesfieldsnone:
+                    update_fields = [
                         c.key for c in table.c
                     ]
                 stmt = insert(table).values(records)
-                update_dict = {k: stmt.inserted[k] for k in update_keys}
-                query = stmt.on_conflict_do_update(**update_dict)
+                update_keys = [k.key for k in table.primary_key.columns]
+                update_dict = {k: stmt.excluded[k] for k in update_fields}
+                query = stmt.on_conflict_do_update(index_elements=update_keys, set_=update_dict)
             else:
                 query = insert(table).values(records)
             if textual:
@@ -308,7 +310,7 @@ class DataBase:
 
 
     def insert_pages(self, schema:str, table_name:str, records:list[dict], 
-                     upsert:bool=False, update_keys:list=None, page_size:int=10_000):
+                     upsert:bool=False, update_fields:list=None, page_size:int=10_000):
         max_ix = len(records)
         start_ix = 0
         while start_ix < max_ix:
@@ -316,29 +318,29 @@ class DataBase:
             ctx = records[start_ix:end_ix]
             dbr = self.insert(schema, table_name, ctx, 
                               upsert=upsert,
-                              update_keys=update_keys)
+                              update_fields=update_fields)
             yield dbr
             start_ix = end_ix
     
 
     def upsert(self, schema:str, table_name:str,
-               records:list, update_keys:list=None, 
+               records:list, update_fields:list=None, 
                textual:bool=False) -> DataBaseResponse | str:
         return self.insert(schema, table_name,
                            records, upsert=True, 
-                           update_keys=update_keys,
+                           update_fields=update_fields,
                            textual=textual)
 
 
     def upsert_pages(self, schema:str, table_name:str, records:list[dict], 
-                    update_keys:list=None, page_size:int=10_000):
+                    update_fields:list=None, page_size:int=10_000):
         max_ix = len(records)
         start_ix = 0
         while start_ix < max_ix:
             end_ix = min(page_size + start_ix, max_ix)
             ctx = records[start_ix:end_ix]
             dbr = self.upsert(schema, table_name, ctx, 
-                            update_keys=update_keys)
+                            update_fields=update_fields)
             yield dbr
             start_ix = end_ix
 
