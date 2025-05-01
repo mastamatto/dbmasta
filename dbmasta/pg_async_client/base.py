@@ -63,11 +63,11 @@ class AsyncDataBase():
         return cls(auth, debug=debug)
 
 
-    def engine(self, database:str, single_use:bool=False) -> Engine:
+    def engine(self, schema:str, single_use:bool=False) -> Engine:
         if single_use:
-            engine = self.engine_manager.get_temporary_engine(database)
+            engine = self.engine_manager.get_temporary_engine(schema)
         else:
-            engine = self.engine_manager.get_engine(database)
+            engine = self.engine_manager.get_engine(schema)
         return engine
 
 
