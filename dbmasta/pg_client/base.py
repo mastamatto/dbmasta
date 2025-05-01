@@ -20,6 +20,7 @@ from dbmasta.authorization import Authorization
 from .response import DataBaseResponse
 from dbmasta.sql_types_pg import type_map
 from .tables import TableCache
+from collections import defaultdict
 
 
 DEBUG = False
@@ -51,6 +52,7 @@ class DataBase:
         self.table_cache = {
             # name: TableCache
         }
+        self.enums = {}
 
     @classmethod
     def env(cls, debug:bool=False):
@@ -83,6 +85,28 @@ class DataBase:
             for db,tbl in db_tbls:
                 _=self.get_table(db,tbl,engine)
             engine.dipose()
+
+
+    def preload_enums(self)->None:
+        qry = """
+        SELECT
+        n.nspname      AS schema,
+        t.typname      AS enum_name,
+        e.enumlabel    AS enum_value,
+        e.enumsortorder
+        FROM pg_type t
+        JOIN pg_enum e         ON t.oid = e.enumtypid
+        JOIN pg_namespace n    ON n.oid = t.typnamespace
+        ORDER BY n.nspname, t.typname, e.enumsortorder;
+        """
+        res = self.run(qry, "core")
+        enums = defaultdict(list) # (schema,enum_name) -> list[enum_value]
+        for r in res:
+            sc = r['schema']
+            en = r['enum_name']
+            ev = r['enum_value']
+            enums[(sc,en)].append(ev)
+        self.enums = dict(enums)
 
 
     def get_table(self, schema:str, table_name:str, engine=None):
@@ -134,16 +158,38 @@ class DataBase:
         return val.value
 
 
-    def convert_header_info(self, mapp, value):
-        if mapp == 'is_nullable':
-            return value == 'YES'
-        elif mapp == 'data_type':
-            return type_map[value]
-        elif mapp == 'column_type':
-            return value.upper()
-        else:
-            return value
+    # def convert_header_info(self, mapp, value):
+    #     if mapp == 'is_nullable':
+    #         return value == 'YES'
+    #     elif mapp == 'data_type':
+    #         return type_map[value]
+    #     elif mapp == 'column_type':
+    #         return value.upper()
+    #     else:
+    #         return value
     
+    def convert_header(self, value:dict) -> dict:
+        nullable = str(value['is_nullable']).lower() == 'yes'
+        data_type = value['data_type']
+        updatable = str(value['is_updatable']).lower() == 'yes'
+        default = value['column_default']
+        enum_values = []
+        if str(data_type).lower() == 'user-defined':
+            key = (value['udt_schema'], value['udt_name'])
+            data_type = type_map['text']
+            if key in self.enums:
+                enum_values = self.enums[key]
+        else:
+            data_type = type_map[data_type]
+        return dict(
+            is_nullable = nullable,
+            data_type = data_type,
+            is_updatable = updatable,
+            column_default = default,
+            enum_values = enum_values
+        )
+        
+        
     
     def get_header_info(self, schema, table_name) -> dict:
         query = f"""
@@ -152,8 +198,10 @@ class DataBase:
         """
         response = self.run(query, schema)
         assert len(response) > 0, f"Table Does Not Exist: {table_name}"
-        res = {x['column_name']: {k : self.convert_header_info(k, v) 
-                                  for k,v in x.items()} for x in response}
+        res = {x['column_name']: self.convert_header(x)
+               for x in response}
+        # res = {x['column_name']: {k : self.convert_header_info(k, v) 
+        #                           for k,v in x.items()} for x in response}
         return res
 
 

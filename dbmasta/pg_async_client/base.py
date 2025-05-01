@@ -167,16 +167,40 @@ class AsyncDataBase():
         return val.value
 
 
-    def convert_header_info(self, mapp, value):
-        if mapp == 'is_nullable':
-            return value == 'YES'
-        elif mapp == 'data_type':
-            return type_map[value]
-        elif mapp == 'column_type':
-            return value.upper()
-        else:
-            return value
+    # def convert_header_info(self, mapp, value):
+    #     if mapp == 'is_nullable':
+    #         return value == 'YES'
+    #     elif mapp == 'data_type':
+    #         if str(value).lower() == "user-defined":
+    #             return type_map['text'] # we will just treat these as text for now
+    #         return type_map[value]
+    #     elif mapp == 'column_type':
+    #         return value.upper()
+    #     else:
+    #         return value
     
+    
+    def convert_header(self, value:dict) -> dict:
+        nullable = str(value['is_nullable']).lower() == 'yes'
+        data_type = value['data_type']
+        updatable = str(value['is_updatable']).lower() == 'yes'
+        default = value['column_default']
+        enum_values = []
+        if str(data_type).lower() == 'user-defined':
+            key = (value['udt_schema'], value['udt_name'])
+            data_type = type_map['text']
+            if key in self.enums:
+                enum_values = self.enums[key]
+        else:
+            data_type = type_map[data_type]
+        return dict(
+            is_nullable = nullable,
+            data_type = data_type,
+            is_updatable = updatable,
+            column_default = default,
+            enum_values = enum_values
+        )
+
     
     async def get_header_info(self, schema, table_name):
         query = f"""
@@ -185,8 +209,10 @@ class AsyncDataBase():
         """
         response = await self.run(query, schema)
         assert len(response) > 0, f"Table Does Not Exist: {table_name}"
-        res = {x['column_name']: {k : self.convert_header_info(k, v) 
-                                  for k,v in x.items()} for x in response}
+        res = {x['column_name']: self.convert_header(x)
+               for x in response}
+        # res = {x['column_name']: {k : self.convert_header_info(k, v) 
+        #                           for k,v in x.items()} for x in response}
         return res
 
 
