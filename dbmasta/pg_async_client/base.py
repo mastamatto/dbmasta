@@ -16,6 +16,8 @@ from .tables import TableCache
 from .engine import Engine, EngineManager
 import asyncio, traceback
 from collections import defaultdict
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import cast
 
 TIMEOUT_SECONDS = 240
 
@@ -585,9 +587,12 @@ class AsyncDataBase():
         return lambda col: sql_text(f"`{col.table.name}`.`{col.key}` {value}")
 
     @staticmethod
-    def json_like(value, _not=False):
-        return lambda col: col.jsonb_contains(value) if not _not else ~col.jsonb_contains(value)
-
+    def json_like(value: dict, _not: bool = False):
+        def condition(col):
+            expr = cast(col, JSONB).contains(value)
+            return ~expr if _not else expr
+        return condition
+    
     @staticmethod
     def _process_condition(table, condition):
         if isinstance(condition, dict):

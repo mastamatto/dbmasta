@@ -21,6 +21,8 @@ from .response import DataBaseResponse
 from dbmasta.sql_types_pg import type_map
 from .tables import TableCache
 from collections import defaultdict
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import cast
 
 
 DEBUG = False
@@ -569,9 +571,11 @@ class DataBase:
 
 
     @staticmethod
-    def json_like(value, _not=False):
-        return lambda col: col.jsonb_contains(value) if not _not else ~col.jsonb_contains(value)
-
+    def json_like(value: dict, _not: bool = False):
+        def condition(col):
+            expr = cast(col, JSONB).contains(value)
+            return ~expr if _not else expr
+        return condition
 
     @staticmethod
     def _process_condition(table, condition):
