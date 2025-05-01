@@ -1,4 +1,4 @@
-# dbmasta (simple mariadb interface)
+# dbmasta (simple mariadb/postgres interface)
 
 ## Overview
 
