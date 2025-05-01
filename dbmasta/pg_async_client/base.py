@@ -7,14 +7,15 @@ from sqlalchemy.sql import (and_, or_,
                             delete,
                             join as sql_join
                             )
-from sqlalchemy.dialects.mysql import insert
+from sqlalchemy.dialects.postgresql import insert
 import datetime as dt
 from dbmasta.authorization import Authorization
 from .response import DataBaseResponse
-from dbmasta.sql_types import type_map
+from dbmasta.sql_types_pg import type_map
 from .tables import TableCache
 from .engine import Engine, EngineManager
 import asyncio, traceback
+from collections import defaultdict
 
 TIMEOUT_SECONDS = 240
 
@@ -48,12 +49,14 @@ class AsyncDataBase():
         self.database     = auth.default_database
         self.debug        = debug
         self.table_cache  = {}
+        self.enums        = {}
         self.ignore_event_errors = ignore_event_errors
         self.event_handlers = {
             "on_new_table": on_new_table,
             "on_query_error": on_query_error
         }
         self.engine_manager = EngineManager(db=self)
+        
         
         
     ### INITIALIZERS
@@ -80,6 +83,29 @@ class AsyncDataBase():
             _ = await self.get_table(db, tbl)
 
 
+    async def preload_enums(self)->None:
+        qry = """
+        SELECT
+        n.nspname      AS schema,
+        t.typname      AS enum_name,
+        e.enumlabel    AS enum_value,
+        e.enumsortorder
+        FROM pg_type t
+        JOIN pg_enum e         ON t.oid = e.enumtypid
+        JOIN pg_namespace n    ON n.oid = t.typnamespace
+        ORDER BY n.nspname, t.typname, e.enumsortorder;
+        """
+        res = await self.run(qry, "core")
+        enums = defaultdict(list) # (schema,enum_name) -> list[enum_value]
+        for r in res:
+            sc = r['schema']
+            en = r['enum_name']
+            ev = r['enum_value']
+            enums[(sc,en)].append(ev)
+        self.enums = dict(enums)
+        
+        
+
     async def raise_event(self, event:str, *a, **kw):
         hnd = self.event_handlers.get(event, None)
         if hnd:
@@ -94,7 +120,7 @@ class AsyncDataBase():
 
 
     async def get_table(self, schema:str, table_name:str):
-        engine = self.engine_manager.get_engine()
+        engine = self.engine_manager.get_engine(schema)
         table_cache = self.table_cache.get((schema, table_name), None)
         if table_cache is None:
             table_cache = await TableCache.new(schema, table_name, engine.ctx)
@@ -182,7 +208,7 @@ class AsyncDataBase():
                distinct:bool=False, order_by:str=None, offset:int=None, limit:int=None, 
                reverse:bool=None, textual:bool=False, response_model:object=None
                ) -> DataBaseResponse | str:
-        engine = self.engine()
+        engine = self.engine(schema)
         dbr = DataBaseResponse.default(schema)
         try:
             table = await self.get_table(schema, table_name)
@@ -240,7 +266,7 @@ class AsyncDataBase():
     async def insert(self, schema:str, table_name:str,
                records:list, upsert:bool=False, 
                update_keys:list=None, textual:bool=False) -> DataBaseResponse | str:
-        engine = self.engine()
+        engine = self.engine(schema)
         dbr = DataBaseResponse.default(schema)
         try:
             table = await self.get_table(schema, table_name)
@@ -308,7 +334,7 @@ class AsyncDataBase():
 
     async def update(self, schema:str, table_name:str, 
                update:dict={}, where:dict={}, textual:bool=False):
-        engine = self.engine()
+        engine = self.engine(schema)
         dbr = DataBaseResponse.default(schema)
         try:
             table = await self.get_table(schema, table_name)
@@ -331,7 +357,7 @@ class AsyncDataBase():
         
     async def delete(self, schema:str, table_name:str,
                where:dict, textual:bool=False):
-        engine = self.engine()
+        engine = self.engine(schema)
         dbr = DataBaseResponse.default(schema)
         try:
             table = await self.get_table(schema, table_name)
@@ -352,7 +378,7 @@ class AsyncDataBase():
     
     
     async def clear_table(self, schema:str, table_name:str, textual:bool=False):
-        engine = self.engine()
+        engine = self.engine(schema)
         dbr = DataBaseResponse.default(schema)
         try:
             table = await self.get_table(schema, table_name)

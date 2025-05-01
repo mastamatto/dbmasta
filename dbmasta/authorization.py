@@ -3,11 +3,11 @@ import os
 from typing import Literal
 
 
-ENGINE = Literal["aiomysql", "pymysql", "aiopg", "psycopg2","postgresql"]
+ENGINE = Literal["aiomysql", "pymysql", "asyncpg", "psycopg2","postgresql"]
 ENGINE_MAP = {
     "aiomysql": "mysql+aiomysql",
     "pymysql": "mysql+pymysql",
-    "aiopg": "postgresql+aiopg",
+    "asyncpg": "postgresql+asyncpg",
     "psycopg2": "postgresql+psycopg2",
     # "postgresql": "postgresql"
 }
@@ -52,7 +52,7 @@ class Authorization:
         self.default_database= default_database
         self.engine_name     = engine
         self.engine          = ENGINE_MAP[engine]
-        self.dialect         = "postgresql" if self.engine_name in ["aiopg", "psycopg2", "postgresql"] else "mysql"
+        self.dialect         = "postgresql" if self.engine_name in ["asyncpg", "psycopg2", "postgresql"] else "mysql"
         self.extra_connection_params = extra_connection_params or {}
     
     
@@ -103,7 +103,6 @@ class Authorization:
             user= self.username, 
             password=self.password, 
             host=self.host, 
-            port=self.port, 
             database=database
         )
         if self.extra_connection_params:

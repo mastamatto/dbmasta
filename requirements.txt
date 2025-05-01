@@ -1,5 +1,5 @@
 sqlalchemy>=2.0.27
 aiomysql
 pymysql
-aiopg
+asyncpg
 psycopg2
