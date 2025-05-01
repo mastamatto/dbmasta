@@ -4,31 +4,30 @@ from sqlalchemy.pool import AsyncAdaptedQueuePool
 TIMEOUT_SECONDS = 240
 
 class Engine:
-    def __init__(self, database:str, engine:AsyncEngine, manager, single_use:bool=False):
-        self.database = database
+    def __init__(self, schema:str, engine:AsyncEngine, manager, single_use:bool=False):
+        self.schema = schema
         self.ctx = engine
         self.manager = manager
         self.single_use = single_use
         
     @classmethod
-    def new(cls, database:str, manager):
+    def new(cls, schema:str, manager):
         temp_engine_kwargs = {
-            "url": manager.auth.uri(database),
+            "url": manager.auth.uri(),
             "echo": manager.db.debug,
             "poolclass": AsyncAdaptedQueuePool,
             "max_overflow": manager.max_overflow,
             "pool_size": manager.pool_size,
             "pool_recycle": manager.pool_recycle,
             "pool_timeout": manager.pool_timeout,
-            "connect_args": {'connect_timeout': TIMEOUT_SECONDS}
         }
         engine = create_async_engine(**temp_engine_kwargs)
-        return cls(database, engine, manager)
+        return cls(schema, engine, manager)
         
     @classmethod
-    def temporary(cls, database:str, manager):
+    def temporary(cls, schema:str, manager):
         temp_engine_kwargs = {
-            "url": manager.auth.uri(database),
+            "url": manager.auth.uri(),
             "echo": manager.db.debug,
             "poolclass": AsyncAdaptedQueuePool,
             "max_overflow": 0,
@@ -38,7 +37,7 @@ class Engine:
             "connect_args": {'connect_timeout': TIMEOUT_SECONDS}
         }
         engine = create_async_engine(**temp_engine_kwargs)
-        return cls(database, engine, manager, single_use=True)
+        return cls(schema, engine, manager, single_use=True)
         
     def __repr__(self): return f"<Engine ({'single use only' if self.single_use else 'stays alive'})>"
     
@@ -57,7 +56,7 @@ class EngineManager:
                  pool_timeout:int=30,
                  max_overflow:int=5
                  ):
-        self.engines    = {} # database_name:str || database_engine:AsyncEngine
+        self.engines    = {} # schema:str || database_engine:AsyncEngine
         self.db         = db
         self.auth       = db.auth
         self.pool_size  = pool_size
@@ -65,29 +64,29 @@ class EngineManager:
         self.pool_timeout = pool_timeout
         self.max_overflow = max_overflow
         
-    def create(self, database:str):
-        engine = Engine.new(database, manager=self)
-        self.engines[database] = engine
+    def create(self, schema:str):
+        engine = Engine.new(schema, manager=self)
+        self.engines[schema] = engine
         return engine
         
-    def get_temporary_engine(self, database:str) -> Engine:
-        engine = Engine.temporary(database, manager=self)
+    def get_temporary_engine(self, schema:str) -> Engine:
+        engine = Engine.temporary(schema, manager=self)
         return engine
         
-    def get_engine(self, database:str) -> Engine:
-        if database not in self.engines:
-            engine = self.create(database)
+    def get_engine(self, schema:str) -> Engine:
+        if schema not in self.engines:
+            engine = self.create(schema)
             return engine
         else:
-            return self.engines[database]
+            return self.engines[schema]
         
-    async def kill(self, database:str):
-        engine = self.engines.get(database, None)
+    async def kill(self, schema:str):
+        engine = self.engines.get(schema, None)
         if engine is not None:
             await engine.kill()
-            del self.engines[database]
+            del self.engines[schema]
         
     async def dispose_all(self):
-        for database, engine in self.engines.items():
+        for schema, engine in self.engines.items():
             await engine.kill()
         self.engines.clear()
