@@ -65,21 +65,21 @@ class EngineManager:
         self.pool_timeout = pool_timeout
         self.max_overflow = max_overflow
         
-    def create(self, database:str):
-        engine = Engine.new(database, manager=self)
-        self.engines[database] = engine
+    def create(self, schema:str):
+        engine = Engine.new(schema, manager=self)
+        self.engines[schema] = engine
         return engine
         
     def get_temporary_engine(self, database:str) -> Engine:
         engine = Engine.temporary(database, manager=self)
         return engine
         
-    def get_engine(self, database:str) -> Engine:
-        if database not in self.engines:
-            engine = self.create(database)
+    def get_engine(self, schema:str) -> Engine:
+        if schema not in self.engines:
+            engine = self.create(schema)
             return engine
         else:
-            return self.engines[database]
+            return self.engines[schema]
         
     async def kill(self, database:str):
         engine = self.engines.get(database, None)
@@ -88,6 +88,6 @@ class EngineManager:
             del self.engines[database]
         
     async def dispose_all(self):
-        for database, engine in self.engines.items():
+        for schema, engine in self.engines.items():
             await engine.kill()
         self.engines.clear()
