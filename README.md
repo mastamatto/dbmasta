@@ -28,7 +28,7 @@ db = DataBase(
         password='password', 
         host='host', 
         port=3306, 
-        database_name='database_name'
+        default_database='database_name'
         )
     )
 # Async Version
@@ -38,7 +38,7 @@ db = AsyncDataBase(
         password='password', 
         host='host', 
         port=3306, 
-        database_name='database_name'
+        default_database='database_name'
         )
     )
 
