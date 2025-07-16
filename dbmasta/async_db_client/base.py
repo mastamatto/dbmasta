@@ -9,7 +9,7 @@ from sqlalchemy.sql import (and_, or_,
                             )
 from sqlalchemy.dialects.mysql import insert
 import datetime as dt
-from dbmasta.authorization import Authorization
+from dbmasta.authorization import Authorization, ENGINE
 from .response import DataBaseResponse
 from dbmasta.sql_types import type_map
 from .tables import TableCache
@@ -58,8 +58,8 @@ class AsyncDataBase():
         
     ### INITIALIZERS
     @classmethod
-    def env(cls, debug:bool=False):
-        auth = Authorization.env(as_async=True)
+    def env(cls, engine:ENGINE="pymysql", debug:bool=False):
+        auth = Authorization.env(engine)
         return cls(auth, debug=debug)
 
 

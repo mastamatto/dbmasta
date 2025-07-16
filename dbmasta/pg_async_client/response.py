@@ -6,7 +6,7 @@ class DataBaseResponse():
     def __init__(self,
                  query,
                  schema:str=None,
-                 as_decimals:bool=True,
+                 as_decimals:bool=False,
                  response_model:object=None,
                  **dbr_args
                  ):

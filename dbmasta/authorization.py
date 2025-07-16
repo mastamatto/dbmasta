@@ -57,7 +57,7 @@ class Authorization:
     
     
     @classmethod
-    def env(cls, as_async:bool=False):
+    def env(cls, engine: ENGINE="mysql"):
         """Create Authorization from environment variables
         Required variables:
             - db_username    (username)
@@ -84,7 +84,7 @@ class Authorization:
             host     = host,
             port     = port,
             default_database = default_database,
-            as_async = as_async
+            engine= engine
         )
         return auth
         

@@ -57,11 +57,6 @@ class DataBase:
         return cls(auth, debug)
     
     @classmethod
-    def oet(cls, debug:bool=False):
-        auth = Authorization.oet()
-        return cls(auth, debug)
-    
-    @classmethod
     def with_creds(cls, host:str, port:int, username:str, password:str, database:str, debug:bool=False):
         auth = Authorization(username, password, host, port, database)
         return cls(auth, debug)

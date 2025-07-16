@@ -5,7 +5,7 @@ from sqlalchemy.dialects import postgresql
 class DataBaseResponse():
     def __init__(self,
                  query,
-                 as_decimals:bool=True,
+                 as_decimals:bool=False,
                  response_model:object=None,
                  **dbr_args
                  ):
