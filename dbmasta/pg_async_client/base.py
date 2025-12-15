@@ -19,7 +19,8 @@ from collections import defaultdict
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy import cast
 
-TIMEOUT_SECONDS = 240
+DB_CONCURRENCY_DEFAULT = 10
+DB_EXECUTE_TIMEOUT_DEFAULT = 30
 
 class AsyncDataBase():
     Authorization = Authorization
@@ -46,6 +47,9 @@ class AsyncDataBase():
                  on_new_table=None,
                  on_query_error=None,
                  ignore_event_errors:bool=False,
+                 auto_raise_errors:bool=False,
+                 max_db_concurrency:int=DB_CONCURRENCY_DEFAULT,
+                 db_exec_timeout:int=DB_EXECUTE_TIMEOUT_DEFAULT,
                  ):
         self.auth = auth
         self.database     = auth.default_database
@@ -58,7 +62,19 @@ class AsyncDataBase():
             "on_query_error": on_query_error
         }
         self.engine_manager = EngineManager(db=self)
+        self.auto_raise_errors = auto_raise_errors
+        self._max_db_concurrency = max_db_concurrency
+        self._db_exec_timeout:int = db_exec_timeout
+        self._db_semaphor = asyncio.Semaphore(self.max_db_concurrency)
         
+    @property
+    def max_db_concurrency(self) -> int:
+        return self._max_db_concurrency
+    
+    @max_db_concurrency.setter
+    def max_db_concurrency(self, value:int):
+        self._max_db_concurrency = value or DB_CONCURRENCY_DEFAULT
+        self.db_semaphor = asyncio.Semaphore(self.max_db_concurrency)
         
         
     ### INITIALIZERS
@@ -139,7 +155,7 @@ class AsyncDataBase():
             query = sql_text(query)
         dbr = DataBaseResponse(query, schema=schema, **dbr_args)
         try:
-            dbr = await self.execute(engine.ctx, query, **dbr_args)
+            dbr = await self.execute(engine.ctx, query, auto_commit= not query.is_select, **dbr_args)
         except Exception as e:
             print("An error occurred running custom query")
             dbr.error_info = e.__repr__()
@@ -150,14 +166,31 @@ class AsyncDataBase():
                 await engine.kill()
         return dbr
 
-
-    async def execute(self, engine, query, **dbr_args) -> DataBaseResponse:
-        dbr = DataBaseResponse(query, **dbr_args)
-        async with engine.connect() as connection:
-            compiled = query.compile(dialect=engine.dialect)
-            result = await connection.execute(compiled)
+    async def _execute_and_commit(self, connection, query, auto_commit):
+        result = await connection.execute(query)
+        if auto_commit:
             await connection.commit()
-            await dbr._receive(result)
+        return result
+
+    async def execute(self, engine, query, auto_commit:bool=True, **dbr_args) -> DataBaseResponse:
+        dbr = DataBaseResponse(query, **dbr_args)
+        async with self._db_semaphor:
+            async with engine.connect() as connection:
+                try:
+                    compiled = query.compile(dialect=engine.dialect)
+                    result = asyncio.wait_for(
+                        self._execute_and_commit(connection, compiled, auto_commit),
+                        self._db_exec_timeout
+                    )
+                    await dbr._receive(result)
+                except asyncio.TimeoutError as e:
+                    dbr.error_info = str(e)
+                    dbr.successful = False
+                    raise
+                except Exception as e:
+                    dbr.error_info = str(e)
+                    dbr.successful = False
+                    raise
         return dbr
 
 
@@ -260,7 +293,7 @@ class AsyncDataBase():
             if textual:
                 txt = self.textualize(query)
                 return txt
-            dbr = await self.execute(engine.ctx, query, response_model=response_model)
+            dbr = await self.execute(engine.ctx, query, auto_commit=False, response_model=response_model)
         except Exception as e:
             dbr.successful = False
             dbr.error_info = e.__repr__()
