@@ -542,4 +542,4 @@ class DataBase:
     
     
     def __repr__(self):
-        return f"<DB ({self.auth.username})>"
+        return f"<DbMasta MariaDB ({self.auth.username})>"

@@ -60,24 +60,22 @@ class Authorization:
     def env(cls, engine: ENGINE="mysql"):
         """Create Authorization from environment variables
         Required variables:
-            - db_username    (username)
-            - db_password    (password)
-            - db_host        (host, ie localhost)
-            - db_port        (port, ie 3306)
-            - db_default     (default database name, ie my_db)
+            - dbmasta_username    (username)
+            - dbmasta_password    (password)
+            - dbmasta_host        (host, ie localhost)
+            - dbmasta_port        (port, ie 3306)
+            - dbmasta_default     (default database name, ie my_db)
         """
-        username = os.getenv('db_username')
-        password = os.getenv('db_password')
-        host = os.getenv('db_host')
-        port = os.getenv('db_port')
-        default_database = os.getenv('db_default')
-        
+        username = os.getenv('dbmasta_username')
+        password = os.getenv('dbmasta_password')
+        host = os.getenv('dbmasta_host')
+        port = os.getenv('dbmasta_port')
+        default_database = os.getenv('dbmasta_default')
         assert username is not None, "Missing Env Var: db_username"
         assert password is not None, "Missing Env Var: db_password"
         assert host is not None, "Missing Env Var: db_host"
         assert port is not None, "Missing Env Var: db_port"
         assert default_database is not None, "Missing Env Var: db_default"
-        
         auth = cls(
             username = username,
             password = password,
@@ -117,4 +115,4 @@ class Authorization:
     
     
     def __repr__(self):
-        return f"<Database Authorization ({self.username})>"
+        return f"<DbMasta Authorization ({self.username})>"

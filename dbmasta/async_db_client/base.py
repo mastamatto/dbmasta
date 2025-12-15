@@ -9,6 +9,7 @@ from sqlalchemy.sql import (and_, or_,
                             )
 from sqlalchemy.dialects.mysql import insert
 import datetime as dt
+from typing import AsyncGenerator, Any
 from dbmasta.authorization import Authorization, ENGINE
 from .response import DataBaseResponse
 from dbmasta.sql_types import type_map
@@ -41,6 +42,7 @@ class AsyncDataBase():
                  on_new_table=None,
                  on_query_error=None,
                  ignore_event_errors:bool=False,
+                 auto_raise_errors:bool=False
                  ):
         self.auth = auth
         self.database     = auth.default_database
@@ -52,6 +54,7 @@ class AsyncDataBase():
             "on_query_error": on_query_error
         }
         self.engine_manager = EngineManager(db=self)
+        self.auto_raise_errors = auto_raise_errors
         
         
     ### INITIALIZERS
@@ -108,7 +111,7 @@ class AsyncDataBase():
         engine = self.engine_manager.get_engine(database)
         if isinstance(query, str):
             query = sql_text(query)
-        dbr = DataBaseResponse(query, **dbr_args) # can be overwritten
+        dbr = DataBaseResponse(query, auto_raise_errors=self.auto_raise_errors, **dbr_args) # can be overwritten
         try:
             dbr = await self.execute(engine.ctx, query, **dbr_args)
         except Exception as e:
@@ -122,11 +125,12 @@ class AsyncDataBase():
         return dbr
 
 
-    async def execute(self, engine, query, **dbr_args) -> DataBaseResponse:
-        dbr = DataBaseResponse(query, **dbr_args)
+    async def execute(self, engine, query, nocommit:bool=False, **dbr_args) -> DataBaseResponse:
+        dbr = DataBaseResponse(query, auto_raise_errors=self.auto_raise_errors, **dbr_args)
         async with engine.connect() as connection:
             result = await connection.execute(query)
-            await connection.commit()
+            if not nocommit:
+                await connection.commit()
             await dbr._receive(result)
         return dbr
 
@@ -202,7 +206,7 @@ class AsyncDataBase():
             if textual:
                 txt = self.textualize(query)
                 return txt
-            dbr = await self.execute(engine.ctx, query, response_model=response_model)
+            dbr = await self.execute(engine.ctx, query, response_model=response_model, nocommit=True)
         except Exception as e:
             dbr.successful = False
             dbr.error_info = e.__repr__()
@@ -217,7 +221,7 @@ class AsyncDataBase():
 
     async def select_pages(self, database:str, table_name:str, params:dict=None, columns:list=None, 
                 distinct:bool=False, order_by:str=None, page_size:int=25_000, 
-                reverse:bool=None, response_model:object=None):
+                reverse:bool=None, response_model:object=None) -> AsyncGenerator[None, list[Any]]:
         """Automatically paginate larger queries
         into smaller chunks. Returns a generator
         """
@@ -559,4 +563,4 @@ class AsyncDataBase():
     
     
     def __repr__(self):
-        return f"<DB ({self.auth.username})>"
+        return f"<DbMasta Async MariaDB Client ({self.auth.username})>"
