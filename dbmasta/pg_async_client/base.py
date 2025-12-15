@@ -178,7 +178,7 @@ class AsyncDataBase():
             async with engine.connect() as connection:
                 try:
                     compiled = query.compile(dialect=engine.dialect)
-                    result = asyncio.wait_for(
+                    result = await asyncio.wait_for(
                         self._execute_and_commit(connection, compiled, auto_commit),
                         self._db_exec_timeout
                     )
