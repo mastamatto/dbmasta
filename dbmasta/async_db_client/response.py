@@ -7,6 +7,7 @@ class DataBaseResponse():
                  query,
                  as_decimals:bool=False,
                  response_model:object=None,
+                 auto_raise_errors:bool=False,
                  **dbr_args
                  ):
         # defaults
@@ -27,6 +28,7 @@ class DataBaseResponse():
         self.records      = []
         self.successful   = None
         self.error_info   = None
+        self.auto_raise_errors = auto_raise_errors
         
         # check if any dbr args were passed that haven't been configured yet
         if len(dbr_args) > 0:
@@ -50,6 +52,12 @@ class DataBaseResponse():
         except Exception as e:
             self.successful = False
             self.error_info = str(e.__repr__())
+            if self.auto_raise_errors:
+                self.raise_for_error()
+    
+    def raise_for_error(self):
+        if not self.successful:
+            raise Exception(self.error_info)
             
     def build_records(self, data):
         while len(data) > 0:

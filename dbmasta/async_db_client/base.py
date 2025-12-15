@@ -16,8 +16,6 @@ from .tables import TableCache
 from .engine import Engine, EngineManager
 import asyncio, traceback
 
-TIMEOUT_SECONDS = 240
-
 class AsyncDataBase():
     Authorization = Authorization
     

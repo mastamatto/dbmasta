@@ -1,8 +1,6 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 
-TIMEOUT_SECONDS = 240
-
 class Engine:
     def __init__(self, database:str, engine:AsyncEngine, manager, single_use:bool=False):
         self.database = database
@@ -11,7 +9,7 @@ class Engine:
         self.single_use = single_use
         
     @classmethod
-    def new(cls, database:str, manager):
+    def new(cls, database:str, manager:"EngineManager"):
         temp_engine_kwargs = {
             "url": manager.auth.uri(database),
             "echo": manager.db.debug,
@@ -20,7 +18,8 @@ class Engine:
             "pool_size": manager.pool_size,
             "pool_recycle": manager.pool_recycle,
             "pool_timeout": manager.pool_timeout,
-            "connect_args": {'connect_timeout': TIMEOUT_SECONDS}
+            "connect_args": {'connect_timeout': manager.connect_timeout},
+            "pool_pre_ping": True
         }
         engine = create_async_engine(**temp_engine_kwargs)
         return cls(database, engine, manager)
@@ -35,7 +34,7 @@ class Engine:
             "pool_size": 1,
             "pool_recycle": -1,
             "pool_timeout": 30,
-            "connect_args": {'connect_timeout': TIMEOUT_SECONDS}
+            "connect_args": {'connect_timeout': manager.connect_timeout},
         }
         engine = create_async_engine(**temp_engine_kwargs)
         return cls(database, engine, manager, single_use=True)
@@ -55,7 +54,8 @@ class EngineManager:
                  pool_size:int=10, 
                  pool_recycle:int=3600,
                  pool_timeout:int=30,
-                 max_overflow:int=5
+                 max_overflow:int=5,
+                 connect_timeout:int=30
                  ):
         self.engines    = {} # database_name:str || database_engine:AsyncEngine
         self.db         = db
@@ -64,6 +64,7 @@ class EngineManager:
         self.pool_recycle = pool_recycle
         self.pool_timeout = pool_timeout
         self.max_overflow = max_overflow
+        self.connect_timeout = connect_timeout
         
     def create(self, database:str):
         engine = Engine.new(database, manager=self)
