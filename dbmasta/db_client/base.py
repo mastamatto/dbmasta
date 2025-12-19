@@ -97,14 +97,14 @@ class DataBase:
             engine.dispose()
         return table_cache.table
 
-    def run(self, query, database=None, **dbr_args):
+    def run(self, query, database=None, *, params:dict=None, **dbr_args):
         database = self.database if database is None else database
         engine = self.engine(database)
         dbr = DataBaseResponse.default(database)
         if isinstance(query, str):
             query = sql_text(query)
         try:
-            dbr = self.execute(engine, query, **dbr_args)
+            dbr = self.execute(engine, query, params=params, **dbr_args)
         except Exception as e:
             dbr.error_info = str(e.__repr__())
             dbr.successful = False
@@ -112,10 +112,10 @@ class DataBase:
             engine.dispose()
         return dbr
 
-    def execute(self, engine, query, **dbr_args) -> DataBaseResponse:
+    def execute(self, engine, query, *, params:dict=None, **dbr_args) -> DataBaseResponse:
         dbr = DataBaseResponse(query, **dbr_args)
         with engine.connect() as connection:
-            result = connection.execute(query)
+            result = connection.execute(query, parameters=params or {})
             connection.commit()
             dbr._receive(result)
         return dbr

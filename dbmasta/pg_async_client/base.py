@@ -149,13 +149,13 @@ class AsyncDataBase():
         return table_cache.table
 
 
-    async def run(self, query, schema, **dbr_args):
+    async def run(self, query, schema, *, params:dict=None, **dbr_args):
         engine = self.engine_manager.get_engine(schema)
         if isinstance(query, str):
             query = sql_text(query)
         dbr = DataBaseResponse(query, schema=schema, **dbr_args)
         try:
-            dbr = await self.execute(engine.ctx, query, auto_commit= not query.is_select, **dbr_args)
+            dbr = await self.execute(engine.ctx, query, auto_commit= not query.is_select, params=params, **dbr_args)
         except Exception as e:
             print("An error occurred running custom query")
             dbr.error_info = e.__repr__()
@@ -166,20 +166,20 @@ class AsyncDataBase():
                 await engine.kill()
         return dbr
 
-    async def _execute_and_commit(self, connection, query, auto_commit):
-        result = await connection.execute(query)
+    async def _execute_and_commit(self, connection, query, auto_commit, params:dict=None):
+        result = await connection.execute(query, parameters=params or {})
         if auto_commit:
             await connection.commit()
         return result
 
-    async def execute(self, engine, query, auto_commit:bool=True, **dbr_args) -> DataBaseResponse:
+    async def execute(self, engine, query, *, auto_commit:bool=True, params:dict=None, **dbr_args) -> DataBaseResponse:
         dbr = DataBaseResponse(query, **dbr_args)
         async with self._db_semaphor:
             async with engine.connect() as connection:
                 try:
                     compiled = query.compile(dialect=engine.dialect)
                     result = await asyncio.wait_for(
-                        self._execute_and_commit(connection, compiled, auto_commit),
+                        self._execute_and_commit(connection, compiled, auto_commit, params),
                         self._db_exec_timeout
                     )
                     await dbr._receive(result)
