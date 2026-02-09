@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from decimal import Decimal
 from sqlalchemy.dialects import postgresql
+import traceback
 
 class DataBaseResponse():
     def __init__(self,
@@ -50,6 +51,13 @@ class DataBaseResponse():
         except Exception as e:
             self.successful = False
             self.error_info = str(e.__repr__())
+            self.traceback = traceback.format_exc()
+            if self.auto_raise_errors:
+                self.raise_for_error()
+            
+    def raise_for_error(self):
+        if not self.successful:
+            raise Exception(self.error_info)
             
     def build_records(self, data):
         while len(data) > 0:
@@ -73,6 +81,17 @@ class DataBaseResponse():
     @property
     def row_count(self):
         return len(self)
+    
+    def one_or_none(self):
+        """
+        Returns a single object if one exists.
+        If more than one exists, it'll raise an exception saying limit=1 should be used in the query
+        """
+        if self.row_count == 0:
+            return None
+        if self.row_count > 1:
+            raise Exception("One or none requires limit=1 to be used in the 'select' query. Please add that and try again.")
+        return self.records[0]
     
     def __getitem__(self, k:int):
         return self.records[k]

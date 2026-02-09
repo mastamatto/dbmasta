@@ -48,6 +48,7 @@ class AsyncDataBase():
                  auto_raise_errors:bool=False,
                  max_db_concurrency:int=DB_CONCURRENCY_DEFAULT,
                  db_exec_timeout:int=DB_EXECUTE_TIMEOUT_DEFAULT,
+                 engine_config:dict|None=None
                  ):
         self.auth = auth
         self.database     = auth.default_database
@@ -58,7 +59,8 @@ class AsyncDataBase():
             "on_new_table": on_new_table,
             "on_query_error": on_query_error
         }
-        self.engine_manager = EngineManager(db=self)
+        engine_config = engine_config or dict()
+        self.engine_manager = EngineManager(db=self, **engine_config)
         self.auto_raise_errors = auto_raise_errors
         self._max_db_concurrency = max_db_concurrency
         self._db_exec_timeout:int = db_exec_timeout
@@ -151,10 +153,13 @@ class AsyncDataBase():
         async with self._db_semaphor:
             async with engine.connect() as connection:
                 try:
-                    result = await asyncio.wait_for(
-                        self._execute_and_commit(connection, query, auto_commit, params),
-                        self._db_exec_timeout
-                    )
+                    if self._db_exec_timeout is not None:
+                        result = await asyncio.wait_for(
+                            self._execute_and_commit(connection, query, auto_commit, params),
+                            self._db_exec_timeout
+                        )
+                    else:
+                        result = await self._execute_and_commit(connection, query, auto_commit, params)
                     await dbr._receive(result)
                 except asyncio.TimeoutError as e:
                     dbr.error_info = str(e)

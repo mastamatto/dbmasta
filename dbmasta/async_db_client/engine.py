@@ -55,7 +55,7 @@ class EngineManager:
                  pool_recycle:int=3600,
                  pool_timeout:int=30,
                  max_overflow:int=5,
-                 connect_timeout:int=30
+                 connect_timeout:int|None=30
                  ):
         self.engines    = {} # database_name:str || database_engine:AsyncEngine
         self.db         = db
@@ -89,6 +89,6 @@ class EngineManager:
             del self.engines[database]
         
     async def dispose_all(self):
-        for database, engine in self.engines.items():
+        for _, engine in self.engines.items():
             await engine.kill()
         self.engines.clear()

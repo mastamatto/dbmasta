@@ -77,6 +77,18 @@ class DataBaseResponseBase():
     def row_count(self):
         return len(self)
     
+    @property
+    def one_or_none(self):
+        """
+        Returns a single object if one exists.
+        If more than one exists, it'll raise an exception saying limit=1 should be used in the query
+        """
+        if self.row_count == 0:
+            return None
+        if self.row_count > 1:
+            raise Exception("One or none requires limit=1 to be used in the 'select' query. Please add that and try again.")
+        return self.records[0]
+    
     def __getitem__(self, k:int):
         return self.records[k]
     

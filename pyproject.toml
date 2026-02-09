@@ -1,13 +1,13 @@
 [project]
 name = "dbmasta"
-version = "0.1.15"
+version = "0.1.18"
 description = "A simple MariaDB/Postgres client based on SQLAlchemy core"
 readme = "README.md"
 authors = [{ name = "Matt Owen", email = "matt@dealerclear.com" }]
 license = { text = "MIT" }
 requires-python = ">=3.7"
 dependencies = [
-    "sqlalchemy>=2.0.37",
+    "sqlalchemy>=2.0.41",
     "aiomysql",
     "pymysql",
     "asyncpg",

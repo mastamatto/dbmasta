@@ -18,7 +18,7 @@ class Engine:
             "pool_size": manager.pool_size,
             "pool_recycle": manager.pool_recycle,
             "pool_timeout": manager.pool_timeout,
-            "connect_args": {'connect_timeout': manager.connect_timeout},
+            "connect_args": {'timeout': manager.connect_timeout},
             "pool_pre_ping": True
         }
         engine = create_async_engine(**temp_engine_kwargs)
@@ -34,7 +34,7 @@ class Engine:
             "pool_size": 1,
             "pool_recycle": -1,
             "pool_timeout": 30,
-            "connect_args": {'connect_timeout': manager.connect_timeout},
+            "connect_args": {'timeout': manager.connect_timeout},
         }
         engine = create_async_engine(**temp_engine_kwargs)
         return cls(schema, engine, manager, single_use=True)

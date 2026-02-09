@@ -1,3 +1,4 @@
+from typing import Any
 from sqlalchemy import (text as sql_text, asc, desc, null as sql_null, func)
 from sqlalchemy.sql import (and_, or_, 
                             not_ as sql_not, 
@@ -50,6 +51,7 @@ class AsyncDataBase():
                  auto_raise_errors:bool=False,
                  max_db_concurrency:int=DB_CONCURRENCY_DEFAULT,
                  db_exec_timeout:int=DB_EXECUTE_TIMEOUT_DEFAULT,
+                 engine_config:dict|None=None
                  ):
         self.auth = auth
         self.database     = auth.default_database
@@ -61,7 +63,8 @@ class AsyncDataBase():
             "on_new_table": on_new_table,
             "on_query_error": on_query_error
         }
-        self.engine_manager = EngineManager(db=self)
+        engine_config = engine_config or dict()
+        self.engine_manager = EngineManager(db=self, **engine_config)
         self.auto_raise_errors = auto_raise_errors
         self._max_db_concurrency = max_db_concurrency
         self._db_exec_timeout:int = db_exec_timeout
@@ -325,11 +328,35 @@ class AsyncDataBase():
             yield data
 
 
+    def records_need_paging(self, records:list[dict]) -> int|None:
+        max_allowed = 32_000 # 32,676 is the max for postgres, but we'll leave a little wiggle room
+        if not records:
+            return None
+        cols = list(records[0].keys())
+        page_size = max(1, min(max_allowed // len(cols), 2000))
+        return page_size
+        
+
     async def insert(self, schema:str, table_name:str,
-               records:list, upsert:bool=False, 
+               records:list[dict[str, Any]], upsert:bool=False, 
                update_fields:list=None, textual:bool=False) -> DataBaseResponse | str:
         engine = self.engine(schema)
         dbr = DataBaseResponse.default(schema)
+        if len(records) == 0:
+            dbr.successful = False
+            dbr.error_info = "No records to insert"
+            if self.auto_raise_errors:
+                raise ValueError("No records to insert")
+            return dbr
+        page_size = self.records_need_paging(records)
+        if page_size:
+            gnr = self.insert_pages(schema, table_name, records, upsert=upsert, update_fields=update_fields, page_size=page_size)
+            async for page in gnr:
+                _=page
+            dbr.successful = True
+            dbr.records = records
+            dbr.error_info = "No errors, but records were paginated due to size. Check individual page responses for details."
+            return dbr
         try:
             table = await self.get_table(schema, table_name)
             records = await self.correct_types(schema, table_name, records)
