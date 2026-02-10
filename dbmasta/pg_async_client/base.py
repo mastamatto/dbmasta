@@ -333,8 +333,10 @@ class AsyncDataBase():
         if not records:
             return None
         cols = list(records[0].keys())
+        if len(cols) == 0:
+            return None
         page_size = max(1, min(max_allowed // len(cols), 2000))
-        return page_size
+        return page_size if len(records) > page_size else None
         
 
     async def insert(self, schema:str, table_name:str,
@@ -349,7 +351,7 @@ class AsyncDataBase():
                 raise ValueError("No records to insert")
             return dbr
         page_size = self.records_need_paging(records)
-        if page_size:
+        if (page_size or 0) > 1:
             gnr = self.insert_pages(schema, table_name, records, upsert=upsert, update_fields=update_fields, page_size=page_size)
             async for page in gnr:
                 _=page
