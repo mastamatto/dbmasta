@@ -14,7 +14,7 @@ from sqlalchemy.sql import (and_, or_,
                             join as sql_join
                             )
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.pool import NullPool
 import datetime as dt
 from dbmasta.authorization import Authorization
 from .response import DataBaseResponse
@@ -73,7 +73,7 @@ class DataBase:
         return create_engine(
             url = self.auth.uri(),
             echo = self.debug,
-            poolclass = QueuePool,  # Use a QueuePool for pooling connections
+            poolclass = NullPool,   # Use a QueuePool for pooling connections
             max_overflow = 0,       # No extra connections beyond the pool size
             pool_size = 1,          # Pool size of 1, mimicking single connection behavior
             pool_recycle = -1,      # Disables connection recycling

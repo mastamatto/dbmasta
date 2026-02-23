@@ -30,7 +30,7 @@ class DataBaseResponseBase():
         self.successful   = None
         self.error_info   = None
         self.traceback    = None
-        self.auto_raise_errors = auto_raise_errors
+
         
         # check if any dbr args were passed that haven't been configured yet
         if len(dbr_args) > 0:
@@ -47,8 +47,6 @@ class DataBaseResponseBase():
         self.successful = False
         self.error_info = str(exc.__repr__())
         self.traceback = traceback.format_exc()
-        if self.auto_raise_errors:
-            self.raise_for_error()
     
     def raise_for_error(self):
         if not self.successful:

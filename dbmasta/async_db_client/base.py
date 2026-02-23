@@ -20,6 +20,15 @@ import asyncio, traceback
 DB_CONCURRENCY_DEFAULT = 10
 DB_EXECUTE_TIMEOUT_DEFAULT = 30
 
+def _is_fatal_mysql_protocol_error(e: Exception) -> bool:
+    s = str(e)
+    return (
+        "Packet sequence number wrong" in s
+        or "Commands out of sync" in s
+        or "Lost connection to MySQL server" in s
+        or "Can't connect to MySQL server" in s
+    )
+
 class AsyncDataBase():
     Authorization = Authorization
     
@@ -160,12 +169,14 @@ class AsyncDataBase():
                         )
                     else:
                         result = await self._execute_and_commit(connection, query, auto_commit, params)
-                    await dbr._receive(result)
+                    await dbr._receive(result) # handles closure
                 except asyncio.TimeoutError as e:
                     dbr.error_info = str(e)
                     dbr.successful = False
                     raise
                 except Exception as e:
+                    if _is_fatal_mysql_protocol_error(e):
+                        connection.invalidate()
                     dbr.error_info = str(e)
                     dbr.successful = False
                     raise

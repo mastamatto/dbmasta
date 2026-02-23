@@ -14,7 +14,7 @@ from sqlalchemy.sql import (and_, or_,
                             join as sql_join
                             )
 from sqlalchemy.dialects.mysql import insert
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.pool import NullPool
 import datetime as dt
 from dbmasta.authorization import Authorization
 from .response import DataBaseResponse
@@ -62,25 +62,22 @@ class DataBase:
         return cls(auth, debug)
 
     def engine(self, database:str):
-        # nullpool always on for now
+        # NullPool: no connection pooling; each checkout opens/closes a connection.
         if not database:
             database = self.database
         return create_engine(
-            url = self.auth.uri(database),
-            echo = self.debug,
-            poolclass = QueuePool,  # Use a QueuePool for pooling connections
-            max_overflow = 0,       # No extra connections beyond the pool size
-            pool_size = 1,          # Pool size of 1, mimicking single connection behavior
-            pool_recycle = -1,      # Disables connection recycling
-            pool_timeout = 30,      # Timeout for getting a connection from the pool
-            connect_args = {'connect_timeout': TIMEOUT_SECONDS})
+            self.auth.uri(database),
+            echo=self.debug,
+            poolclass=NullPool,
+            connect_args={"connect_timeout": TIMEOUT_SECONDS},
+        )
 
     def preload_tables(self, db_tbls:list[tuple[str,str]])->None:
         if len(db_tbls) > 0:
             engine = self.engine(self.database)
             for db,tbl in db_tbls:
                 _=self.get_table(db,tbl,engine)
-            engine.dipose()
+            engine.dispose()
 
     def get_table(self, database:str, table_name:str, engine=None):
         encapped = False

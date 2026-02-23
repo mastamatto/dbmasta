@@ -3,9 +3,10 @@ import os
 from typing import Literal
 
 
-ENGINE = Literal["aiomysql", "pymysql", "asyncpg", "psycopg2","postgresql"]
+ENGINE = Literal["aiomysql", "asyncmy", "pymysql", "asyncpg", "psycopg2","postgresql"]
 ENGINE_MAP = {
     "aiomysql": "mysql+aiomysql",
+    "asyncmy": "mysql+asyncmy",
     "pymysql": "mysql+pymysql",
     "asyncpg": "postgresql+asyncpg",
     "psycopg2": "postgresql+psycopg2",

@@ -52,7 +52,7 @@ class Engine:
 class EngineManager:
     def __init__(self, db, 
                  pool_size:int=10, 
-                 pool_recycle:int=3600,
+                 pool_recycle:int=1800,
                  pool_timeout:int=30,
                  max_overflow:int=5,
                  connect_timeout:int=30
