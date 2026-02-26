@@ -97,9 +97,10 @@ class BLOB(VARCHAR): # CASE SENSITIVE
         else:
             return self._value
 
+# MySQL text column max lengths (bytes): TINYTEXT=255, TEXT=65535, MEDIUMTEXT=16777215, LONGTEXT=4294967295
 class TEXT(VARCHAR):
     def __init__(self, value, **kwargs):
-        super().__init__(value=value, **kwargs)
+        super().__init__(value=value, length=65535, **kwargs)
 
 
 class TINYBLOB(VARCHAR): # CASE SENSITIVE
@@ -115,7 +116,7 @@ class TINYBLOB(VARCHAR): # CASE SENSITIVE
 
 class TINYTEXT(VARCHAR):
     def __init__(self, value, **kwargs):
-        super().__init__(value=value, **kwargs)
+        super().__init__(value=value, length=255, **kwargs)
 
 
 class MEDIUMBLOB(BLOB): # CASE SENSITIVE
@@ -131,7 +132,7 @@ class MEDIUMBLOB(BLOB): # CASE SENSITIVE
 
 class MEDIUMTEXT(VARCHAR):
     def __init__(self, value, **kwargs):
-        super().__init__(value=value, **kwargs)
+        super().__init__(value=value, length=16777215, **kwargs)
 
 
 class LONGBLOB(BLOB): # CASE SENSITIVE

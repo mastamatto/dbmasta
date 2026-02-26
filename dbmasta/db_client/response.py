@@ -13,3 +13,4 @@ class DataBaseResponse(DataBaseResponseBase):
                 self.records = list(self.build_records(data))
         except Exception as e:
             self._handle_error(e)
+            raise

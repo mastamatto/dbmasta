@@ -17,5 +17,5 @@ class DataBaseResponse(DataBaseResponseBase):
         finally:
             try:
                 result.close()
-            except:
-                ...
+            except Exception:
+                pass

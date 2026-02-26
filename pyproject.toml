@@ -1,6 +1,6 @@
 [project]
 name = "dbmasta"
-version = "0.1.22"
+version = "0.1.26"
 description = "A simple MariaDB/Postgres client based on SQLAlchemy core"
 readme = "README.md"
 authors = [{ name = "Matt Owen", email = "matt@dealerclear.com" }]
@@ -29,7 +29,19 @@ classifiers = [
     "Operating System :: OS Independent"
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "python-dotenv>=1.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/mastamatto/dbmasta"
 Repository = "https://github.com/mastamatto/dbmasta"
 Issues = "https://github.com/mastamatto/dbmasta/issues"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

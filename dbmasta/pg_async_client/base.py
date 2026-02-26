@@ -11,6 +11,7 @@ from sqlalchemy.sql import (and_, or_,
 from sqlalchemy.dialects.postgresql import insert
 import datetime as dt
 from dbmasta.authorization import Authorization
+from dbmasta.exceptions import SchemaQueryError, MissingColumnError
 from .response import DataBaseResponse
 from dbmasta.sql_types_pg import type_map
 from .tables import TableCache
@@ -57,6 +58,7 @@ class AsyncDataBase():
         self.database     = auth.default_database
         self.debug        = debug
         self.table_cache  = {}
+        self._header_info_cache = {}  # (schema, table_name) -> coldata dict for correct_types
         self.enums        = {}
         self.ignore_event_errors = ignore_event_errors
         self.event_handlers = {
@@ -77,7 +79,7 @@ class AsyncDataBase():
     @max_db_concurrency.setter
     def max_db_concurrency(self, value:int):
         self._max_db_concurrency = value or DB_CONCURRENCY_DEFAULT
-        self.db_semaphor = asyncio.Semaphore(self.max_db_concurrency)
+        self._db_semaphor = asyncio.Semaphore(self._max_db_concurrency)
         
         
     ### INITIALIZERS
@@ -164,6 +166,7 @@ class AsyncDataBase():
             dbr.error_info = e.__repr__()
             tb = traceback.format_exc()
             await self.raise_event("on_query_error", exc=e, tb=tb, dbr=dbr)
+            raise
         finally:
             if engine.single_use:
                 await engine.kill()
@@ -199,6 +202,11 @@ class AsyncDataBase():
 
     def convert_vals(self, key:str, value:object, 
                      coldata:dict, **kwargs):
+        if key not in coldata:
+            raise MissingColumnError(
+                f"Table schema empty or missing column {key!r}; "
+                "schema query may have failed or table does not exist."
+            )
         col = coldata[key]
         kwargs.update(col)
         # used for datatypes on 'write' queries
@@ -242,16 +250,21 @@ class AsyncDataBase():
 
     
     async def get_header_info(self, schema, table_name):
-        query = f"""
-            SELECT * FROM information_schema.columns 
-            WHERE table_name = '{table_name}' AND table_schema = '{schema}'
-        """
-        response = await self.run(query, schema)
-        assert len(response) > 0, f"Table Does Not Exist: {table_name}"
+        key = (schema, table_name)
+        if key in self._header_info_cache:
+            return self._header_info_cache[key]
+        query = sql_text(
+            "SELECT * FROM information_schema.columns "
+            "WHERE table_name = :table_name AND table_schema = :schema"
+        )
+        response = await self.run(query, schema, params={"table_name": table_name, "schema": schema})
+        if not getattr(response, "successful", True) or len(response) == 0:
+            raise SchemaQueryError(
+                f"information_schema query failed or returned no columns for {schema!r}.{table_name!r}"
+            )
         res = {x['column_name']: self.convert_header(x)
                for x in response}
-        # res = {x['column_name']: {k : self.convert_header_info(k, v) 
-        #                           for k,v in x.items()} for x in response}
+        self._header_info_cache[key] = res
         return res
 
 

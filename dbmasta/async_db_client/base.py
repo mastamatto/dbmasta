@@ -9,8 +9,9 @@ from sqlalchemy.sql import (and_, or_,
                             )
 from sqlalchemy.dialects.mysql import insert
 import datetime as dt
-from typing import AsyncGenerator, Any
+from typing import AsyncGenerator, Any, Optional
 from dbmasta.authorization import Authorization, ENGINE
+from dbmasta.exceptions import SchemaQueryError, MissingColumnError
 from .response import DataBaseResponse
 from dbmasta.sql_types import type_map
 from .tables import TableCache
@@ -19,6 +20,24 @@ import asyncio, traceback
 
 DB_CONCURRENCY_DEFAULT = 10
 DB_EXECUTE_TIMEOUT_DEFAULT = 30
+
+# Map reflected SQLAlchemy column type class names to type_map keys (MySQL / generic)
+_SA_TYPE_NAME_TO_MAP_KEY = {
+    "Integer": "INT", "INTEGER": "INT",
+    "SmallInteger": "SMALLINT", "SMALLINT": "SMALLINT",
+    "BigInteger": "BIGINT", "BIGINT": "BIGINT",
+    "TINYINT": "TINYINT", "MEDIUMINT": "MEDIUMINT",
+    "String": "VARCHAR", "VARCHAR": "VARCHAR", "CHAR": "CHAR", "NVARCHAR": "VARCHAR",
+    "Text": "TEXT", "TEXT": "TEXT", "LONGTEXT": "LONGTEXT", "MEDIUMTEXT": "MEDIUMTEXT", "TINYTEXT": "TINYTEXT",
+    "Boolean": "BOOL", "BOOLEAN": "BOOL",
+    "DateTime": "DATETIME", "DATETIME": "DATETIME",
+    "Date": "DATE", "DATE": "DATE",
+    "Time": "TIME", "TIME": "TIME",
+    "Timestamp": "TIMESTAMP", "TIMESTAMP": "TIMESTAMP",
+    "Numeric": "DECIMAL", "DECIMAL": "DECIMAL", "Float": "FLOAT", "FLOAT": "FLOAT", "DOUBLE": "DOUBLE",
+    "LargeBinary": "BLOB", "BLOB": "BLOB", "TINYBLOB": "TINYBLOB", "MEDIUMBLOB": "MEDIUMBLOB", "LONGBLOB": "LONGBLOB",
+    "ENUM": "ENUM", "JSON": "LONGTEXT",  # JSON: use LONGTEXT so large payloads (e.g. json) aren't truncated
+}
 
 def _is_fatal_mysql_protocol_error(e: Exception) -> bool:
     s = str(e)
@@ -63,6 +82,7 @@ class AsyncDataBase():
         self.database     = auth.default_database
         self.debug        = debug
         self.table_cache  = {}
+        self._header_info_cache = {}  # (database, table_name) -> coldata dict for correct_types
         self.ignore_event_errors = ignore_event_errors
         self.event_handlers = {
             "on_new_table": on_new_table,
@@ -82,7 +102,7 @@ class AsyncDataBase():
     @max_db_concurrency.setter
     def max_db_concurrency(self, value:int):
         self._max_db_concurrency = value or DB_CONCURRENCY_DEFAULT
-        self.db_semaphor = asyncio.Semaphore(self.max_db_concurrency)
+        self._db_semaphor = asyncio.Semaphore(self._max_db_concurrency)
         
     ### INITIALIZERS
     @classmethod
@@ -133,19 +153,20 @@ class AsyncDataBase():
         return table_cache.table
 
 
-    async def run(self, query, database=None, *, params:dict=None, **dbr_args):
+    async def run(self, query, database=None, *, params:dict=None, timeout:Optional[int]=None, **dbr_args):
         database = self.database if database is None else database
         engine = self.engine_manager.get_engine(database)
         if isinstance(query, str):
             query = sql_text(query)
         dbr = DataBaseResponse(query, auto_raise_errors=self.auto_raise_errors, **dbr_args) # can be overwritten
         try:
-            dbr = await self.execute(engine.ctx, query, auto_commit=not query.is_select, params=params, **dbr_args)
+            dbr = await self.execute(engine.ctx, query, auto_commit=not query.is_select, params=params, timeout=timeout, **dbr_args)
         except Exception as e:
             print("An error occurred running custom query")
             dbr.error_info = e.__repr__()
             tb = traceback.format_exc()
             await self.raise_event("on_query_error", exc=e, tb=tb, dbr=dbr)
+            raise
         finally:
             if engine.single_use:
                 await engine.kill()
@@ -157,15 +178,16 @@ class AsyncDataBase():
             await connection.commit()
         return result
 
-    async def execute(self, engine, query, *, auto_commit:bool=True, params:dict=None, **dbr_args) -> DataBaseResponse:
+    async def execute(self, engine, query, *, auto_commit:bool=True, params:dict=None, timeout:Optional[int]=None, **dbr_args) -> DataBaseResponse:
         dbr = DataBaseResponse(query, auto_raise_errors=self.auto_raise_errors, **dbr_args)
+        effective_timeout = timeout if timeout is not None else self._db_exec_timeout
         async with self._db_semaphor:
             async with engine.connect() as connection:
                 try:
-                    if self._db_exec_timeout is not None:
+                    if effective_timeout is not None:
                         result = await asyncio.wait_for(
                             self._execute_and_commit(connection, query, auto_commit, params),
-                            self._db_exec_timeout
+                            effective_timeout
                         )
                     else:
                         result = await self._execute_and_commit(connection, query, auto_commit, params)
@@ -185,6 +207,11 @@ class AsyncDataBase():
 
     def convert_vals(self, key:str, value:object, 
                      coldata:dict, **kwargs):
+        if key not in coldata:
+            raise MissingColumnError(
+                f"Table schema empty or missing column {key!r}; "
+                "schema query may have failed or table does not exist."
+            )
         col = coldata[key]
         kwargs.update(col)
         # used for datatypes on 'write' queries
@@ -201,20 +228,58 @@ class AsyncDataBase():
             return value.upper()
         else:
             return value
+
+    def _coldata_from_table(self, table):
+        """Build coldata dict from a reflected SQLAlchemy Table (same shape as get_header_info).
+        Used so insert/upsert can derive column metadata from get_table() and skip INFORMATION_SCHEMA.
+        """
+        res = {}
+        for col in table.c:
+            type_name = type(col.type).__name__
+            type_key = _SA_TYPE_NAME_TO_MAP_KEY.get(type_name, "STR")
+            data_type = type_map.get(type_key, type_map["STR"])
+            entry = {
+                "DATA_TYPE": data_type,
+                "IS_NULLABLE": bool(col.nullable),
+                "COLUMN_TYPE": type_key,
+            }
+            length = getattr(col.type, "length", None)
+            if length is not None:
+                entry["CHARACTER_MAXIMUM_LENGTH"] = length
+            res[col.key] = entry
+        return res
     
     
     async def get_header_info(self, database, table_name):
         if not database:
             database = self.database
-        hdrQry = f"SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = N'{table_name}' AND TABLE_SCHEMA = N'{database}'"
-        hdrRsp = await self.run(hdrQry, database)
+        key = (database, table_name)
+        if key in self._header_info_cache:
+            return self._header_info_cache[key]
+        hdrQry = sql_text(
+            "SELECT * FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_NAME = :table_name AND TABLE_SCHEMA = :database"
+        )
+        # Use longer timeout for schema query so it doesn't fail under load (default 30s can be tight)
+        schema_timeout = max(60, (self._db_exec_timeout or 30) * 2)
+        hdrRsp = await self.run(hdrQry, database, params={"table_name": table_name, "database": database}, timeout=schema_timeout)
+        if not getattr(hdrRsp, "successful", True) or len(hdrRsp) == 0:
+            raise SchemaQueryError(
+                f"INFORMATION_SCHEMA query failed or returned no columns for {database!r}.{table_name!r}"
+            )
         res = {x['COLUMN_NAME']: {k : self.convert_header_info(k, v) 
                                   for k,v in x.items()} for x in hdrRsp}
+        self._header_info_cache[key] = res
         return res
 
 
-    async def correct_types(self, database:str, table_name:str, records:list):
-        coldata = await self.get_header_info(database, table_name)
+    async def correct_types(self, database:str, table_name:str, records:list, table=None):
+        """Convert record values to DB types. If table is provided (from get_table), coldata
+        is derived from it and no INFORMATION_SCHEMA query is run."""
+        if table is not None:
+            coldata = self._coldata_from_table(table)
+        else:
+            coldata = await self.get_header_info(database, table_name)
         for r in records:
             for k in r:
                 r[k] = self.convert_vals(k, r[k], coldata)
@@ -293,7 +358,7 @@ class AsyncDataBase():
         dbr = DataBaseResponse.default(database)
         try:
             table = await self.get_table(database, table_name)
-            records = await self.correct_types(database, table_name, records)
+            records = await self.correct_types(database, table_name, records, table=table)
             if upsert:
                 if update_keys is None:
                     update_keys = [

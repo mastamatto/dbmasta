@@ -17,6 +17,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.pool import NullPool
 import datetime as dt
 from dbmasta.authorization import Authorization
+from dbmasta.exceptions import SchemaQueryError, MissingColumnError
 from .response import DataBaseResponse
 from dbmasta.sql_types_pg import type_map
 from .tables import TableCache
@@ -54,6 +55,7 @@ class DataBase:
         self.table_cache = {
             # name: TableCache
         }
+        self._header_info_cache = {}  # (schema, table_name) -> coldata dict for correct_types
         self.enums = {}
 
     @classmethod
@@ -127,26 +129,27 @@ class DataBase:
         return table_cache.table
 
 
-    def run(self, query, schema, **dbr_args):
+    def run(self, query, schema, *, params:dict=None, **dbr_args):
         engine = self.engine()
         dbr = DataBaseResponse.default(schema)
         if isinstance(query, str):
             query = sql_text(query)
         try:
-            dbr = self.execute(engine, query, **dbr_args)
+            dbr = self.execute(engine, query, params=params, **dbr_args)
         except Exception as e:
             dbr.error_info = str(e.__repr__())
             dbr.successful = False
+            raise
         finally:
             engine.dispose()
         return dbr
 
 
-    def execute(self, engine, query, **dbr_args) -> DataBaseResponse:
+    def execute(self, engine, query, *, params:dict=None, **dbr_args) -> DataBaseResponse:
         dbr = DataBaseResponse(query, **dbr_args)
         with engine.connect() as connection:
             compiled = query.compile(dialect=engine.dialect)
-            result = connection.execute(compiled)
+            result = connection.execute(compiled, parameters=params or {})
             connection.commit()
             dbr._receive(result)
         return dbr
@@ -154,6 +157,11 @@ class DataBase:
 
     def convert_vals(self, key:str, value:object, 
                      coldata:dict, **kwargs):
+        if key not in coldata:
+            raise MissingColumnError(
+                f"Table schema empty or missing column {key!r}; "
+                "schema query may have failed or table does not exist."
+            )
         col = coldata[key]
         kwargs.update(col)
         # used for datatypes on 'write' queries
@@ -195,16 +203,21 @@ class DataBase:
         
     
     def get_header_info(self, schema, table_name) -> dict:
-        query = f"""
-            SELECT * FROM information_schema.columns 
-            WHERE table_name = '{table_name}' AND table_schema = '{schema}'
-        """
-        response = self.run(query, schema)
-        assert len(response) > 0, f"Table Does Not Exist: {table_name}"
+        key = (schema, table_name)
+        if key in self._header_info_cache:
+            return self._header_info_cache[key]
+        query = sql_text(
+            "SELECT * FROM information_schema.columns "
+            "WHERE table_name = :table_name AND table_schema = :schema"
+        )
+        response = self.run(query, schema, params={"table_name": table_name, "schema": schema})
+        if not getattr(response, "successful", True) or len(response) == 0:
+            raise SchemaQueryError(
+                f"information_schema query failed or returned no columns for {schema!r}.{table_name!r}"
+            )
         res = {x['column_name']: self.convert_header(x)
                for x in response}
-        # res = {x['column_name']: {k : self.convert_header_info(k, v) 
-        #                           for k,v in x.items()} for x in response}
+        self._header_info_cache[key] = res
         return res
 
 

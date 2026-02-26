@@ -1,0 +1,2 @@
+# Include tests in source distribution (pip won't install them; use repo or sdist to run tests)
+recursive-include tests *

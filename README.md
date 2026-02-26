@@ -12,6 +12,23 @@ To install this package, run the following pip command. **Note: this requires SQ
 pip install dbmasta
 ```
 
+### Getting the tests
+
+Tests are not installed with `pip install dbmasta`. To run them you need the source (including the `tests/` directory):
+
+- **Clone the repo** (recommended):  
+  `git clone https://github.com/mastamatto/dbmasta && cd dbmasta`
+- **Or** download the [source tarball](https://github.com/mastamatto/dbmasta/releases) / "Code" → "Download ZIP" from GitHub and unpack it.
+
+Then install in editable mode with test dependencies and run pytest:
+
+```bash
+pip install -e ".[test]"
+pytest tests/ -v
+```
+
+See `tests/README.md` for env vars and options.
+
 ## Basic Usage
 
 ### Configuration

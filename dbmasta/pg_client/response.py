@@ -50,7 +50,8 @@ class DataBaseResponse():
         except Exception as e:
             self.successful = False
             self.error_info = str(e.__repr__())
-            
+            raise
+
     def build_records(self, data):
         while len(data) > 0:
             x = data.pop(0)

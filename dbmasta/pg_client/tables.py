@@ -21,9 +21,13 @@ class TableCache:
         return cls(schema, table_name, table)
         
     def reset(self, engine):
-        metadata = MetaData()
-        table = f"{self.database}.{self.table_name}"
-        self.table = Table(table, metadata, autoload_with=engine)
+        metadata = MetaData(schema=self.database)
+        self.table = Table(
+            self.table_name,
+            metadata,
+            schema=self.database,
+            autoload_with=engine,
+        )
         self.expires_at = self.now+dt.timedelta(minutes=15)
         
     @property

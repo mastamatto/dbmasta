@@ -17,6 +17,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.pool import NullPool
 import datetime as dt
 from dbmasta.authorization import Authorization
+from dbmasta.exceptions import SchemaQueryError, MissingColumnError
 from .response import DataBaseResponse
 from dbmasta.sql_types import type_map
 from .tables import TableCache
@@ -25,6 +26,24 @@ DEBUG = False
 NULLPOOL_LIMIT  = 10_000
 TIMEOUT_SECONDS = 240
 POOL_RECYCLE    = 900
+
+# Map reflected SQLAlchemy column type class names to type_map keys (MySQL / generic)
+_SA_TYPE_NAME_TO_MAP_KEY = {
+    "Integer": "INT", "INTEGER": "INT",
+    "SmallInteger": "SMALLINT", "SMALLINT": "SMALLINT",
+    "BigInteger": "BIGINT", "BIGINT": "BIGINT",
+    "TINYINT": "TINYINT", "MEDIUMINT": "MEDIUMINT",
+    "String": "VARCHAR", "VARCHAR": "VARCHAR", "CHAR": "CHAR", "NVARCHAR": "VARCHAR",
+    "Text": "TEXT", "TEXT": "TEXT", "LONGTEXT": "LONGTEXT", "MEDIUMTEXT": "MEDIUMTEXT", "TINYTEXT": "TINYTEXT",
+    "Boolean": "BOOL", "BOOLEAN": "BOOL",
+    "DateTime": "DATETIME", "DATETIME": "DATETIME",
+    "Date": "DATE", "DATE": "DATE",
+    "Time": "TIME", "TIME": "TIME",
+    "Timestamp": "TIMESTAMP", "TIMESTAMP": "TIMESTAMP",
+    "Numeric": "DECIMAL", "DECIMAL": "DECIMAL", "Float": "FLOAT", "FLOAT": "FLOAT", "DOUBLE": "DOUBLE",
+    "LargeBinary": "BLOB", "BLOB": "BLOB", "TINYBLOB": "TINYBLOB", "MEDIUMBLOB": "MEDIUMBLOB", "LONGBLOB": "LONGBLOB",
+    "ENUM": "ENUM", "JSON": "LONGTEXT",  # JSON: use LONGTEXT so large payloads aren't truncated
+}
 
 
 class DataBase:
@@ -50,6 +69,7 @@ class DataBase:
         self.table_cache = {
             # name: TableCache
         }
+        self._header_info_cache = {}  # (database, table_name) -> coldata dict for correct_types
 
     @classmethod
     def env(cls, debug:bool=False):
@@ -105,6 +125,7 @@ class DataBase:
         except Exception as e:
             dbr.error_info = str(e.__repr__())
             dbr.successful = False
+            raise
         finally:
             engine.dispose()
         return dbr
@@ -119,6 +140,11 @@ class DataBase:
 
     def convert_vals(self, key:str, value:object, 
                      coldata:dict, **kwargs):
+        if key not in coldata:
+            raise MissingColumnError(
+                f"Table schema empty or missing column {key!r}; "
+                "schema query may have failed or table does not exist."
+            )
         col = coldata[key]
         kwargs.update(col)
         # used for datatypes on 'write' queries
@@ -134,21 +160,53 @@ class DataBase:
             return value.upper()
         else:
             return value
+
+    def _coldata_from_table(self, table):
+        """Build coldata dict from a reflected SQLAlchemy Table (same shape as get_header_info)."""
+        res = {}
+        for col in table.c:
+            type_name = type(col.type).__name__
+            type_key = _SA_TYPE_NAME_TO_MAP_KEY.get(type_name, "STR")
+            data_type = type_map.get(type_key, type_map["STR"])
+            entry = {
+                "DATA_TYPE": data_type,
+                "IS_NULLABLE": bool(col.nullable),
+                "COLUMN_TYPE": type_key,
+            }
+            length = getattr(col.type, "length", None)
+            if length is not None:
+                entry["CHARACTER_MAXIMUM_LENGTH"] = length
+            res[col.key] = entry
+        return res
     
     
     def get_header_info(self, database, table_name) -> dict:
         if not database:
             database = self.database
-        hdrQry = f"SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = N'{table_name}' AND TABLE_SCHEMA = N'{database}'"
-        hdrRsp = self.run(hdrQry, database)
-        assert len(hdrRsp) > 0, f"Table Does Not Exist: {table_name}"
+        key = (database, table_name)
+        if key in self._header_info_cache:
+            return self._header_info_cache[key]
+        hdrQry = sql_text(
+            "SELECT * FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_NAME = :table_name AND TABLE_SCHEMA = :database"
+        )
+        hdrRsp = self.run(hdrQry, database, params={"table_name": table_name, "database": database})
+        if not getattr(hdrRsp, "successful", True) or len(hdrRsp) == 0:
+            raise SchemaQueryError(
+                f"INFORMATION_SCHEMA query failed or returned no columns for {database!r}.{table_name!r}"
+            )
         res = {x['COLUMN_NAME']: {k : self.convert_header_info(k, v) 
                                   for k,v in x.items()} for x in hdrRsp}
+        self._header_info_cache[key] = res
         return res
 
 
-    def correct_types(self, database:str, table_name:str, records:list):
-        coldata = self.get_header_info(database, table_name)
+    def correct_types(self, database:str, table_name:str, records:list, table=None):
+        """Convert record values to DB types. If table is provided (from get_table), coldata is derived from it."""
+        if table is not None:
+            coldata = self._coldata_from_table(table)
+        else:
+            coldata = self.get_header_info(database, table_name)
         for r in records:
             for k in r:
                 r[k] = self.convert_vals(k, r[k], coldata)
@@ -224,7 +282,7 @@ class DataBase:
         try:
             table = self.get_table(database, table_name, engine)
             # clean dtypes
-            records = self.correct_types(database, table_name, records)
+            records = self.correct_types(database, table_name, records, table=table)
             if upsert:
                 if update_keys is None:
                     update_keys = [

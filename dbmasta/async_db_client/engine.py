@@ -1,3 +1,4 @@
+from typing import Optional
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 
@@ -55,7 +56,7 @@ class EngineManager:
                  pool_recycle:int=3600,
                  pool_timeout:int=30,
                  max_overflow:int=5,
-                 connect_timeout:int|None=30
+                 connect_timeout: Optional[int] = 30
                  ):
         self.engines    = {} # database_name:str || database_engine:AsyncEngine
         self.db         = db
