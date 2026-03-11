@@ -18,7 +18,7 @@ class TableCache:
     def reset(self, engine):
         metadata = MetaData()
         self.table = Table(self.table_name, metadata, autoload_with=engine)
-        self.expires_at = self.now+dt.timedelta(minutes=15)
+        self.expires_at = self.now+dt.timedelta(minutes=30)
         
     @property
     def now(self):

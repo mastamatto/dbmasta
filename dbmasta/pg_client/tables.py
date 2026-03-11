@@ -28,7 +28,7 @@ class TableCache:
             schema=self.database,
             autoload_with=engine,
         )
-        self.expires_at = self.now+dt.timedelta(minutes=15)
+        self.expires_at = self.now+dt.timedelta(minutes=30)
         
     @property
     def now(self):

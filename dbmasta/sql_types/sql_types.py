@@ -35,12 +35,12 @@ class VARCHAR:
     def value(self):
         if self._value is None:
             return None
+        if isinstance(self._value, (dict, list)):
+            v = json.dumps(self._value, default=str)
         else:
-            if isinstance(self._value,dict) or isinstance(self._value, list):
-                v = json.dumps(self._value, default=str)
             v = self.clearEscapeChars()
-            v = v[:min(len(v),self._length)]
-            return v
+        v = v[:min(len(v),self._length)]
+        return v
     
     @property
     def SQL(self):
@@ -169,13 +169,12 @@ class INT:
         
     @property
     def value(self):
-        if not isinstance(self._value, self._type):
-            if str(self._value).isnumeric():
-                return int(round(float(self._value),0))
-            else:
-                return 0
-        else:
+        if isinstance(self._value, self._type):
             return self._value
+        try:
+            return int(round(float(self._value), 0))
+        except (ValueError, TypeError):
+            return 0
     
     @property
     def SQL(self):
@@ -202,7 +201,7 @@ class BOOL(TINYINT):
             value = 1
         else:
             value = 0
-        super().__init__(value=value)
+        super().__init__(value=value, **kwargs)
 
 
 ### FLOATS
@@ -329,24 +328,22 @@ class TIMESTAMP:
         return str(self.value)
 
 class TIME:
-    _type = dt.datetime
+    _type = dt.time
     def __init__(self, value, **kwargs):
         self._value = value
         unpack(self, **kwargs)
         _=self.value # force check type
-    
+
     @property
     def value(self):
-        if isinstance(self._value, self._type):
-            v = self._value
-            v = v.replace(microsecond=0)
-            v = str(v).split(' ')[1]
-            return v
-        elif ((self._value == '' or self._value == None or self._value == 'NULL') and 
+        if isinstance(self._value, dt.time):
+            return self._value.replace(microsecond=0)
+        if isinstance(self._value, dt.datetime):
+            return self._value.time().replace(microsecond=0)
+        if ((self._value == '' or self._value is None or self._value == 'NULL') and
               getattr(self, 'IS_NULLABLE', True)):
             return None
-        else:
-            raise InvalidDate(f'"{self._value}" must be of type datetime.datetime')
+        raise InvalidDate(f'"{self._value}" must be of type datetime.time or datetime.datetime')
     
     @property
     def SQL(self):

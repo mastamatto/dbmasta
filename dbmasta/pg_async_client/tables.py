@@ -27,7 +27,7 @@ class TableCache:
         table_name_with_schema = f"{self.schema}.{self.table_name}"
         table = metadata.tables[table_name_with_schema]
         self.table = table
-        self.expires_at = self.now+dt.timedelta(minutes=15)
+        self.expires_at = self.now+dt.timedelta(minutes=30)
         
     @property
     def now(self):

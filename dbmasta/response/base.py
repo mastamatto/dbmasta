@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
+import logging
 from decimal import Decimal
 from sqlalchemy.dialects import mysql
 import traceback
+
+logger = logging.getLogger(__name__)
 
 class DataBaseResponseBase():
     def __init__(self,
@@ -30,12 +33,13 @@ class DataBaseResponseBase():
         self.successful   = None
         self.error_info   = None
         self.traceback    = None
+        self.auto_raise_errors = auto_raise_errors
 
         
         # check if any dbr args were passed that haven't been configured yet
         if len(dbr_args) > 0:
             keys = '\n'.join(f" - {key}" for key in dbr_args)
-            print(f"WARNING!\nTHE FOLLOWING DataBaseResponse CONFIGURATION ARGUMENTS HAVEN'T BEEN CONFIGURED YET: \n{keys}")
+            logger.warning("The following DataBaseResponse configuration arguments haven't been configured yet:\n%s", keys)
         
     @classmethod
     def default(cls, database:str):
@@ -53,8 +57,7 @@ class DataBaseResponseBase():
             raise Exception(self.error_info)
             
     def build_records(self, data):
-        while len(data) > 0:
-            x = data.pop(0)
+        for x in data:
             yield self.build_record(x)
             
     def build_record(self, x):

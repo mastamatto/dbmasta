@@ -1,35 +1,35 @@
 """
 John 3:16
 For God so loved the world, that he gave his only begotten Son, that whosoever believeth
-in Him should not perish, but have everlasting life. 
+in Him should not perish, but have everlasting life.
 """
-from sqlalchemy import (create_engine, 
-                        text as sql_text, asc, desc, null as sql_null, func)
-from sqlalchemy.sql import (and_, or_, 
-                            not_ as sql_not, 
-                            select, 
-                            #insert, 
-                            update as sql_update, 
+from sqlalchemy import (text as sql_text, asc, desc, null as sql_null, func, label)
+from sqlalchemy.sql import (and_, or_,
+                            not_ as sql_not,
+                            select,
+                            #insert,
+                            update as sql_update,
                             delete,
                             join as sql_join
                             )
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.pool import NullPool
 import datetime as dt
 from dbmasta.authorization import Authorization
 from dbmasta.exceptions import SchemaQueryError, MissingColumnError
 from .response import DataBaseResponse
 from dbmasta.sql_types_pg import type_map
 from .tables import TableCache
+from .engine import SyncEngine, SyncEngineManager
+from dbmasta.retry import sync_retry
+import time
 from collections import defaultdict
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy import cast
 
 
 DEBUG = False
-NULLPOOL_LIMIT  = 10_000
 TIMEOUT_SECONDS = 240
-POOL_RECYCLE    = 900
+_HEADER_CACHE_TTL = 1800  # 30 minutes
 
 
 class DataBase:
@@ -48,7 +48,7 @@ class DataBase:
         'null': sql_null,
         'join': sql_join
     }
-    def __init__(self, auth: Authorization, debug:bool=False):
+    def __init__(self, auth: Authorization, debug:bool=False, engine_config:dict=None):
         self.auth = auth
         self.database = auth.default_database
         self.debug = debug
@@ -57,38 +57,39 @@ class DataBase:
         }
         self._header_info_cache = {}  # (schema, table_name) -> coldata dict for correct_types
         self.enums = {}
+        self.engine_manager = SyncEngineManager(db=self, **(engine_config or {}))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.kill_engines()
+        return False
 
     @classmethod
-    def env(cls, debug:bool=False):
+    def env(cls, debug:bool=False, engine_config:dict=None):
         auth = Authorization.env()
-        return cls(auth, debug)
-    
+        return cls(auth, debug, engine_config=engine_config)
+
 
     @classmethod
-    def with_creds(cls, host:str, port:int, username:str, password:str, database:str, debug:bool=False):
+    def with_creds(cls, host:str, port:int, username:str, password:str, database:str, debug:bool=False, engine_config:dict=None):
         auth = Authorization(username, password, host, port, database)
-        return cls(auth, debug)
+        return cls(auth, debug, engine_config=engine_config)
 
+    def engine(self, schema:str=None, single_use:bool=False) -> SyncEngine:
+        schema = schema or self.database
+        if single_use:
+            return self.engine_manager.get_temporary_engine(schema)
+        return self.engine_manager.get_engine(schema)
 
-    def engine(self):
-        # nullpool always on for now
-        return create_engine(
-            url = self.auth.uri(),
-            echo = self.debug,
-            poolclass = NullPool,   # Use a QueuePool for pooling connections
-            max_overflow = 0,       # No extra connections beyond the pool size
-            pool_size = 1,          # Pool size of 1, mimicking single connection behavior
-            pool_recycle = -1,      # Disables connection recycling
-            pool_timeout = 30,      # Timeout for getting a connection from the pool
-            connect_args = {'connect_timeout': TIMEOUT_SECONDS})
-
+    def kill_engines(self):
+        self.engine_manager.dispose_all()
 
     def preload_tables(self, db_tbls:list[tuple[str,str]])->None:
         if len(db_tbls) > 0:
-            engine = self.engine()
             for db,tbl in db_tbls:
-                _=self.get_table(db,tbl,engine)
-            engine.dipose()
+                _=self.get_table(db,tbl)
 
 
     def preload_enums(self)->None:
@@ -114,48 +115,47 @@ class DataBase:
 
 
     def get_table(self, schema:str, table_name:str, engine=None):
-        encapped = False
-        if engine is None:
-            encapped = True
-            engine = self.engine()
+        eng = self.engine_manager.get_engine(schema)
+        raw_engine = engine if engine is not None else eng.ctx
         table_cache = self.table_cache.get((schema, table_name), None)
         if table_cache is None:
-            table_cache = TableCache.new(schema, table_name, engine)
+            table_cache = TableCache.new(schema, table_name, raw_engine)
         elif table_cache.expired:
-            table_cache.reset(engine)
+            table_cache.reset(raw_engine)
         self.table_cache[(schema,table_name)] = table_cache
-        if encapped:
-            engine.dispose()
         return table_cache.table
 
 
     def run(self, query, schema, *, params:dict=None, **dbr_args):
-        engine = self.engine()
+        eng = self.engine(schema, single_use=True)
         dbr = DataBaseResponse.default(schema)
         if isinstance(query, str):
             query = sql_text(query)
         try:
-            dbr = self.execute(engine, query, params=params, **dbr_args)
+            dbr = self.execute(eng.ctx, query, params=params, **dbr_args)
         except Exception as e:
             dbr.error_info = str(e.__repr__())
             dbr.successful = False
             raise
         finally:
-            engine.dispose()
+            if eng.single_use:
+                eng.kill()
         return dbr
 
 
-    def execute(self, engine, query, *, params:dict=None, **dbr_args) -> DataBaseResponse:
+    @sync_retry(max_retries=2, backoff_base=0.5)
+    def execute(self, engine, query, *, auto_commit:bool=True, params:dict=None, **dbr_args) -> DataBaseResponse:
         dbr = DataBaseResponse(query, **dbr_args)
         with engine.connect() as connection:
             compiled = query.compile(dialect=engine.dialect)
             result = connection.execute(compiled, parameters=params or {})
-            connection.commit()
+            if auto_commit:
+                connection.commit()
             dbr._receive(result)
         return dbr
 
 
-    def convert_vals(self, key:str, value:object, 
+    def convert_vals(self, key:str, value:object,
                      coldata:dict, **kwargs):
         if key not in coldata:
             raise MissingColumnError(
@@ -169,16 +169,6 @@ class DataBase:
         return val.value
 
 
-    # def convert_header_info(self, mapp, value):
-    #     if mapp == 'is_nullable':
-    #         return value == 'YES'
-    #     elif mapp == 'data_type':
-    #         return type_map[value]
-    #     elif mapp == 'column_type':
-    #         return value.upper()
-    #     else:
-    #         return value
-    
     def convert_header(self, value:dict) -> dict:
         nullable = str(value['is_nullable']).lower() == 'yes'
         data_type = value['data_type']
@@ -199,13 +189,16 @@ class DataBase:
             column_default = default,
             enum_values = enum_values
         )
-        
-        
-    
+
+
     def get_header_info(self, schema, table_name) -> dict:
         key = (schema, table_name)
-        if key in self._header_info_cache:
-            return self._header_info_cache[key]
+        cached = self._header_info_cache.get(key)
+        if cached is not None:
+            entry, ts = cached
+            if time.monotonic() - ts < _HEADER_CACHE_TTL:
+                return entry
+            del self._header_info_cache[key]
         query = sql_text(
             "SELECT * FROM information_schema.columns "
             "WHERE table_name = :table_name AND table_schema = :schema"
@@ -217,7 +210,7 @@ class DataBase:
             )
         res = {x['column_name']: self.convert_header(x)
                for x in response}
-        self._header_info_cache[key] = res
+        self._header_info_cache[key] = (res, time.monotonic())
         return res
 
 
@@ -235,14 +228,14 @@ class DataBase:
 
 
     ### SELECT, INSERT, UPDATE, DELETE, UPSERT
-    def select(self, schema:str, table_name:str, params:dict=None, columns:list=None, 
-               distinct:bool=False, order_by:str=None, offset:int=None, limit:int=None, 
-               reverse:bool=None, textual:bool=False, response_model:object=None, 
+    def select(self, schema:str, table_name:str, params:dict=None, columns:list=None,
+               distinct:bool=False, order_by:str=None, offset:int=None, limit:int=None,
+               reverse:bool=None, textual:bool=False, response_model:object=None,
                as_decimals:bool=False) -> DataBaseResponse | str:
-        engine = self.engine()
+        eng = self.engine(schema)
         dbr = DataBaseResponse.default(schema)
         try:
-            table = self.get_table(schema, table_name, engine)
+            table = self.get_table(schema, table_name)
             if columns:
                 query = select(*[table.c[col] for col in columns])
             else:
@@ -261,18 +254,16 @@ class DataBase:
             if textual:
                 dbr = self.textualize(query)
             else:
-                dbr = self.execute(engine, query, response_model=response_model, as_decimals=as_decimals)
+                dbr = self.execute(eng.ctx, query, auto_commit=False, response_model=response_model, as_decimals=as_decimals)
         except Exception as e:
             dbr.error_info = str(e.__repr__())
             dbr.successful = False
             raise e
-        finally:
-            engine.dispose()
         return dbr
 
 
-    def select_pages(self, schema:str, table_name:str, params:dict=None, columns:list=None, 
-                distinct:bool=False, order_by:str=None, page_size:int=25_000, 
+    def select_pages(self, schema:str, table_name:str, params:dict=None, columns:list=None,
+                distinct:bool=False, order_by:str=None, page_size:int=25_000,
                 reverse:bool=None, response_model:object=None):
         """Automatically paginate larger queries
         into smaller chunks. Returns a generator
@@ -291,12 +282,12 @@ class DataBase:
 
 
     def insert(self, schema:str, table_name:str,
-               records:list, upsert:bool=False, 
+               records:list, upsert:bool=False,
                update_fields:list=None, textual:bool=False) -> DataBaseResponse | str:
-        engine = self.engine()
+        eng = self.engine(schema)
         dbr = DataBaseResponse.default(schema)
         try:
-            table = self.get_table(schema, table_name, engine)
+            table = self.get_table(schema, table_name)
             # clean dtypes
             records = self.correct_types(schema, table_name, records)
             updatesfieldsnone = update_fields is None
@@ -314,114 +305,266 @@ class DataBase:
             if textual:
                 dbr = self.textualize(query)
             else:
-                dbr = self.execute(engine, query)
+                dbr = self.execute(eng.ctx, query)
         except Exception as e:
             dbr.error_info = str(e.__repr__())
             dbr.successful = False
             raise e
-        finally:
-            engine.dispose()
         return dbr
 
 
-    def insert_pages(self, schema:str, table_name:str, records:list[dict], 
+    def insert_pages(self, schema:str, table_name:str, records:list[dict],
                      upsert:bool=False, update_fields:list=None, page_size:int=10_000):
         max_ix = len(records)
         start_ix = 0
         while start_ix < max_ix:
             end_ix = min(page_size + start_ix, max_ix)
             ctx = records[start_ix:end_ix]
-            dbr = self.insert(schema, table_name, ctx, 
+            dbr = self.insert(schema, table_name, ctx,
                               upsert=upsert,
                               update_fields=update_fields)
             yield dbr
             start_ix = end_ix
-    
+
 
     def upsert(self, schema:str, table_name:str,
-               records:list, update_fields:list=None, 
+               records:list, update_fields:list=None,
                textual:bool=False) -> DataBaseResponse | str:
         return self.insert(schema, table_name,
-                           records, upsert=True, 
+                           records, upsert=True,
                            update_fields=update_fields,
                            textual=textual)
 
 
-    def upsert_pages(self, schema:str, table_name:str, records:list[dict], 
+    def upsert_pages(self, schema:str, table_name:str, records:list[dict],
                     update_fields:list=None, page_size:int=10_000):
         max_ix = len(records)
         start_ix = 0
         while start_ix < max_ix:
             end_ix = min(page_size + start_ix, max_ix)
             ctx = records[start_ix:end_ix]
-            dbr = self.upsert(schema, table_name, ctx, 
+            dbr = self.upsert(schema, table_name, ctx,
                             update_fields=update_fields)
             yield dbr
             start_ix = end_ix
 
 
-    def update(self, schema:str, table_name:str, 
+    def update(self, schema:str, table_name:str,
                update:dict={}, where:dict={}, textual:bool=False) -> DataBaseResponse | str:
-        engine = self.engine()
+        eng = self.engine(schema)
         dbr = DataBaseResponse.default(schema)
         try:
-            table = self.get_table(schema, table_name, engine)
+            table = self.get_table(schema, table_name)
             query = sql_update(table)
             query = self._construct_conditions(query, table, where)
             query = query.values(**update)
             if textual:
                 dbr = self.textualize(query)
             else:
-                dbr = self.execute(engine, query)
+                dbr = self.execute(eng.ctx, query)
         except Exception as e:
             dbr.error_info = str(e.__repr__())
             dbr.successful = False
             raise e
-        finally:
-            engine.dispose()
         return dbr
-        
-        
+
+
     def delete(self, schema:str, table_name:str,
                where:dict, textual:bool=False) -> DataBaseResponse | str:
-        engine = self.engine()
+        eng = self.engine(schema)
         dbr = DataBaseResponse.default(schema)
         try:
-            table = self.get_table(schema, table_name, engine)
+            table = self.get_table(schema, table_name)
             query = delete(table)
             query = self._construct_conditions(query, table, where)
             if textual:
                 dbr = self.textualize(query)
             else:
-                dbr = self.execute(engine, query)
+                dbr = self.execute(eng.ctx, query)
         except Exception as e:
             dbr.error_info = str(e.__repr__())
             dbr.successful = False
             raise e
-        finally:
-            engine.dispose()
         return dbr
-    
-    
+
+
     def clear_table(self, schema:str, table_name:str, textual:bool=False):
-        engine = self.engine()
+        eng = self.engine(schema)
         dbr = DataBaseResponse.default(schema)
         try:
-            table = self.get_table(schema, table_name, engine)
+            table = self.get_table(schema, table_name)
             query = delete(table)
             if textual:
                 dbr = self.textualize(query)
             else:
-                dbr = self.execute(engine, query)
+                dbr = self.execute(eng.ctx, query)
         except Exception as e:
             dbr.error_info = str(e.__repr__())
             dbr.successful = False
             raise e
-        finally:
-            engine.dispose()
         return dbr
- 
- 
+
+
+    def transaction(self, schema=None):
+        from dbmasta.transaction import SyncTransaction
+        return SyncTransaction(db=self, database=schema or self.database)
+
+
+    def join_select(self, schema:str, table_name:str, join_table:str,
+                    on:dict, join_type:str="inner", params:dict=None,
+                    columns:list=None, join_table_schema:str=None,
+                    distinct:bool=False, order_by:str=None, offset:int=None,
+                    limit:int=None, reverse:bool=None, textual:bool=False,
+                    response_model:object=None, as_decimals:bool=False
+                    ) -> DataBaseResponse | str:
+        eng = self.engine(schema)
+        dbr = DataBaseResponse.default(schema)
+        try:
+            table1 = self.get_table(schema, table_name)
+            js = join_table_schema or schema
+            table2 = self.get_table(js, join_table)
+            # Build ON clause
+            on_clause = and_(*[table1.c[lk] == table2.c[rk] for lk, rk in on.items()])
+            # Build join
+            jt = join_type.lower()
+            is_outer = jt in ("left", "right", "full")
+            is_full = jt == "full"
+            j = sql_join(table1, table2, on_clause, isouter=is_outer, full=is_full)
+            # Column selection
+            if columns:
+                col_objs = self._parse_join_columns(columns, table1, table2)
+            else:
+                col_objs = self._resolve_join_columns(table1, table2)
+            query = select(*col_objs).select_from(j)
+            if distinct:
+                query = query.distinct()
+            if params:
+                query = self._construct_join_conditions(query, table1, table2, params)
+            if order_by:
+                reverse = False if reverse is None else reverse
+                dir_f = asc if not reverse else desc
+                order_col = self._resolve_join_order_col(order_by, table1, table2)
+                query = query.order_by(dir_f(order_col))
+            if limit:
+                offset = 0 if offset is None else offset
+                query = query.limit(limit).offset(offset)
+            if textual:
+                dbr = self.textualize(query)
+            else:
+                dbr = self.execute(eng.ctx, query, auto_commit=False, response_model=response_model, as_decimals=as_decimals)
+        except Exception as e:
+            dbr.error_info = str(e.__repr__())
+            dbr.successful = False
+            raise e
+        return dbr
+
+
+    def _resolve_join_columns(self, table1, table2):
+        cols = []
+        t1_names = {c.key for c in table1.c}
+        t2_names = {c.key for c in table2.c}
+        shared = t1_names & t2_names
+        for c in table1.c:
+            if c.key in shared:
+                cols.append(label(f"{table1.name}_{c.key}", c))
+            else:
+                cols.append(c)
+        for c in table2.c:
+            if c.key in shared:
+                cols.append(label(f"{table2.name}_{c.key}", c))
+            else:
+                cols.append(c)
+        return cols
+
+    def _parse_join_columns(self, columns, table1, table2):
+        cols = []
+        for col_spec in columns:
+            if '.' in col_spec:
+                tname, cname = col_spec.split('.', 1)
+                if tname == table1.name:
+                    cols.append(table1.c[cname])
+                elif tname == table2.name:
+                    cols.append(table2.c[cname])
+                else:
+                    raise ValueError(f"Unknown table {tname!r} in column spec {col_spec!r}")
+            else:
+                if col_spec in table1.c:
+                    cols.append(table1.c[col_spec])
+                elif col_spec in table2.c:
+                    cols.append(table2.c[col_spec])
+                else:
+                    raise ValueError(f"Column {col_spec!r} not found in either table")
+        return cols
+
+    def _resolve_join_order_col(self, order_by, table1, table2):
+        if '.' in order_by:
+            tname, cname = order_by.split('.', 1)
+            if tname == table1.name:
+                return table1.c[cname]
+            elif tname == table2.name:
+                return table2.c[cname]
+            else:
+                raise ValueError(f"Unknown table {tname!r} in order_by")
+        if order_by in table1.c:
+            return table1.c[order_by]
+        if order_by in table2.c:
+            return table2.c[order_by]
+        raise ValueError(f"Column {order_by!r} not found in either table")
+
+    def _construct_join_conditions(self, query, table1, table2, params):
+        for key, condition in params.items():
+            if key in ('_AND_', '_OR_'):
+                nested = self._process_join_condition(table1, table2, {key: condition})
+                query = query.where(nested)
+            else:
+                col = self._resolve_join_col(key, table1, table2)
+                if callable(condition):
+                    query = query.where(condition(col))
+                else:
+                    query = query.where(col == condition)
+        return query
+
+    def _resolve_join_col(self, key, table1, table2):
+        if '.' in key:
+            tname, cname = key.split('.', 1)
+            if tname == table1.name:
+                return table1.c[cname]
+            elif tname == table2.name:
+                return table2.c[cname]
+            else:
+                raise ValueError(f"Unknown table {tname!r} in param key {key!r}")
+        if key in table1.c:
+            return table1.c[key]
+        if key in table2.c:
+            return table2.c[key]
+        raise ValueError(f"Column {key!r} not found in either table")
+
+    @staticmethod
+    def _process_join_condition(table1, table2, condition):
+        if isinstance(condition, dict):
+            conditions = []
+            for key, value in condition.items():
+                if key == '_AND_':
+                    conditions.append(and_(*[DataBase._process_join_condition(table1, table2, v) for v in value]))
+                elif key == '_OR_':
+                    conditions.append(or_(*[DataBase._process_join_condition(table1, table2, v) for v in value]))
+                else:
+                    if '.' in key:
+                        tname, cname = key.split('.', 1)
+                        col = table1.c[cname] if tname == table1.name else table2.c[cname]
+                    elif key in table1.c:
+                        col = table1.c[key]
+                    else:
+                        col = table2.c[key]
+                    if callable(value):
+                        conditions.append(value(col))
+                    else:
+                        conditions.append(col == value)
+            return conditions[0] if len(conditions) == 1 else and_(*conditions)
+        else:
+            raise ValueError("Invalid condition format: Expected a dict.")
+
+
     def get_custom_builder(self, request:list[str]):
         output = [
             self.BLDRS.get(bldr, None) for bldr in request
@@ -440,14 +583,14 @@ class DataBase:
     def or_(conditions):
         # implemented for legacy versions
         return conditions
-    
-    
+
+
     @staticmethod
     def not_(func, *args):
         """Returns a negated condition."""
         return lambda col: sql_not(func(*args)(col))
-    
-    
+
+
     @staticmethod
     def in_(values, _not=False, include_null:bool=None):
         """Returns a callable for 'in' condition."""
@@ -475,13 +618,13 @@ class DataBase:
             else:
                 return col > value if not _not else col <= value
         return f
-    
-    
+
+
     @staticmethod
     def greaterThan(value, orEqual, _not):
         return DataBase.greater_than(value, orEqual, _not)
-    
-    
+
+
     @staticmethod
     def less_than(value, or_equal:bool=False, _not=False):
         """Returns a callable for greater than condition."""
@@ -491,26 +634,26 @@ class DataBase:
             else:
                 return col < value if not _not else col >= value
         return f
-    
-    
+
+
     @staticmethod
     def lessThan(value, orEqual, _not):
         return DataBase.less_than(value, orEqual, _not)
-    
-    
+
+
     @staticmethod
     def equal_to(value, _not=False, include_null:bool=None):
         include_null = _not and include_null is None
         if include_null:
             return lambda col: func.ifnull(col, '') == value if not _not else func.ifnull(col, '') != value
         return lambda col: col == value if not _not else col != value
-    
-    
+
+
     @staticmethod
     def equalTo(value, _not=False, include_null:bool=None):
         return DataBase.equal_to(value, _not=_not, include_null=include_null)
-    
-    
+
+
     @staticmethod
     def between(value1, value2, _not=False): # not inclusive
         def f(col):
@@ -518,66 +661,66 @@ class DataBase:
             v2 = max([value1, value2])
             return col.between(v1, v2) if not _not else sql_not(col.between(v1, v2))
         return f
-    
-    
+
+
     @staticmethod
     def after(date, inclusive = False, _not = False):
         return DataBase.greater_than(date, inclusive, _not)
-    
-    
+
+
     @staticmethod
     def before(date, inclusive = False, _not=False):
         return DataBase.less_than(date, inclusive, _not)
-    
-    
+
+
     @staticmethod
     def onDay(date, _not = False):
         if isinstance(date, dt.datetime):
             date = date.date()
         return DataBase.equal_to(date, _not)
-    
-    
+
+
     @staticmethod
     def null(_not = False):
         return lambda col: col.is_(None) if not _not else col.isnot(None)
-    
-    
+
+
     @staticmethod
     def like(value, _not=False):
         return lambda col: col.like(value) if not _not else col.not_like(value)
-    
-    
+
+
     @staticmethod
     def starts_with(value, _not=False):
         """Returns a callable for starts with condition."""
         return DataBase.like(f"{value}%", _not)
-    
-    
+
+
     @staticmethod
     def startsWith(value, _not=False):
         return DataBase.starts_with(value, _not)
-    
-    
+
+
     @staticmethod
     def ends_with(value, _not=False):
         return DataBase.like(f"%{value}", _not)
-    
-    
+
+
     @staticmethod
     def endsWith(value, _not=False):
         return DataBase.ends_with(value, _not)
-    
-    
+
+
     @staticmethod
     def regex(value, _not=False):
         return lambda col: col.regexp_match(value) if not _not else ~col.regexp_match(value)
-    
-    
+
+
     @staticmethod
     def contains(value, _not=False):
         return DataBase.like(f"%{value}%", _not)
-    
-    
+
+
     @staticmethod
     def custom(value:str):
         return lambda col: sql_text(f"`{col.table.name}`.`{col.key}` {value}")
@@ -619,7 +762,35 @@ class DataBase:
             else:
                 query = query.where(table.c[key] == condition)
         return query
-    
-    
+
+
+    def count(self, schema: str, table_name: str, params: dict = None) -> int:
+        eng = self.engine(schema)
+        table = self.get_table(schema, table_name)
+        query = select(func.count()).select_from(table)
+        if params:
+            query = self._construct_conditions(query, table, params)
+        dbr = self.execute(eng.ctx, query, auto_commit=False)
+        return dbr.records[0][list(dbr.records[0].keys())[0]] if dbr.records else 0
+
+    def exists(self, schema: str, table_name: str, params: dict) -> bool:
+        eng = self.engine(schema)
+        table = self.get_table(schema, table_name)
+        sub = select(sql_text("1")).select_from(table)
+        sub = self._construct_conditions(sub, table, params)
+        sub = sub.limit(1)
+        query = select(func.count()).select_from(sub.subquery())
+        dbr = self.execute(eng.ctx, query, auto_commit=False)
+        return dbr.records[0][list(dbr.records[0].keys())[0]] > 0 if dbr.records else False
+
+    def bulk_insert(self, schema: str, table_name: str, records: list,
+                    chunk_size: int = 1000) -> list:
+        results = []
+        for i in range(0, len(records), chunk_size):
+            chunk = records[i:i + chunk_size]
+            dbr = self.insert(schema, table_name, chunk)
+            results.append(dbr)
+        return results
+
     def __repr__(self):
         return f"<DbMasta Postgrest Client ({self.auth.username})>"

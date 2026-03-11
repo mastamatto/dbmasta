@@ -162,3 +162,6 @@ cython_debug/
 test.py
 howto.md
 /.cursor
+CLAUDE.md
+/.claude
+author_tests.py

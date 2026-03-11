@@ -101,7 +101,7 @@ class Authorization:
             engine=self.engine,
             user= self.username, 
             password=self.password, 
-            host=self.host, 
+            host=host,
             database=database
         )
         if self.extra_connection_params:

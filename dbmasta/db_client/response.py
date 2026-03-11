@@ -14,3 +14,8 @@ class DataBaseResponse(DataBaseResponseBase):
         except Exception as e:
             self._handle_error(e)
             raise
+        finally:
+            try:
+                result.close()
+            except Exception:
+                pass

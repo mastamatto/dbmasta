@@ -25,7 +25,7 @@ class TableCache:
             await conn.run_sync(metadata.reflect, only=[self.table_name])
         table = metadata.tables[self.table_name]
         self.table = table
-        self.expires_at = self.now+dt.timedelta(minutes=15)
+        self.expires_at = self.now+dt.timedelta(minutes=30)
         
     @property
     def now(self):
