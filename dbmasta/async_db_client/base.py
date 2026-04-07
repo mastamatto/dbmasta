@@ -217,6 +217,8 @@ class AsyncDataBase():
                 "schema query may have failed or table does not exist."
             )
         col = coldata[key]
+        if value is None and col.get('IS_NULLABLE'):
+            return None
         kwargs.update(col)
         # used for datatypes on 'write' queries
         val = col['DATA_TYPE'](value, **kwargs)
